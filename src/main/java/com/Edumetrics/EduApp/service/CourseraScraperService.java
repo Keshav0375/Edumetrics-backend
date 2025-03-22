@@ -22,7 +22,7 @@ public class CourseraScraperService implements CourseScraperService {
     private CsvDataService csvDataService;
 
     private static final int DEFAULT_TIMEOUT = 10; // Reduced timeout
-    private static final String FIXED_PRICE = "$25/month";
+    private static final String FIXED_PRICE = "$84/month";
     private final Random random = new Random();
 
     @Override

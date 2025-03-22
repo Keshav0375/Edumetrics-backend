@@ -16,7 +16,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 
-@Service
+//@Service
 public class EdxScraperService implements CourseScraperService {
 
     private static final int WAIT_TIME_SECONDS = 10;
