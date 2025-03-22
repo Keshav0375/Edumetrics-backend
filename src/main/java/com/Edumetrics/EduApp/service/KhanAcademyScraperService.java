@@ -1,74 +1,200 @@
 package com.Edumetrics.EduApp.service;
 
 import com.Edumetrics.EduApp.model.Course;
+import io.github.bonigarcia.wdm.WebDriverManager;
 import org.openqa.selenium.*;
 import org.openqa.selenium.chrome.ChromeDriver;
 import org.openqa.selenium.chrome.ChromeOptions;
+import org.openqa.selenium.support.ui.WebDriverWait;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
+import java.util.concurrent.*;
 
-/**
- * Service for scraping Khan Academy courses.
- * This implements the CourseScraperService interface to fit into the application's scraper architecture.
- */
 @Service
 public class KhanAcademyScraperService implements CourseScraperService {
+    @Autowired
+    private CsvDataService csvDataService;
 
-    // Constants for configuration
-    private static final int WAIT_TIMEOUT = 30; // Timeout duration in seconds
+    // Constants optimized for performance and reliability
+    private static final int WAIT_TIMEOUT = 3;
     private static final String BASE_URL = "https://www.khanacademy.org";
+    private static final int MAX_WAIT_MS = 200;
+    private static final int THREAD_POOL_SIZE = 8;
 
-    /**
-     * Returns the name of the platform this scraper supports.
-     * @return The platform name
-     */
+    // ExecutorService for parallel processing
+    private final ExecutorService executorService = Executors.newFixedThreadPool(THREAD_POOL_SIZE);
+
     @Override
     public String getPlatformName() {
         return "KhanAcademy";
     }
 
-    /**
-     * Scrapes courses from Khan Academy based on a search query.
-     * @param query Search query for courses
-     * @param limit Maximum number of courses to scrape
-     * @return List of Course objects
-     */
     @Override
     public List<Course> scrapeCourses(String query, int limit) {
-        WebDriver driver = null;
+        WebDriverManager.chromedriver().setup();
         List<Course> courses = new ArrayList<>();
 
         try {
-            // Initialize the WebDriver
-            driver = initializeDriver();
-            JavascriptExecutor js = (JavascriptExecutor) driver;
+            // Build search URLs based on query
+            List<String> searchUrls = buildSearchUrls(query);
+            List<Future<List<Course>>> futures = new ArrayList<>();
 
-            // If query is provided, try to search for courses
-            if (query != null && !query.isEmpty()) {
-                courses.addAll(searchCourses(driver, js, query, limit));
+            // Submit tasks to executor service
+            for (String url : searchUrls) {
+                futures.add(executorService.submit(() -> scrapeCoursesFromUrl(url, limit)));
             }
 
-            // If we didn't find any courses from search or no query was provided,
-            // fall back to scraping subject pages
-            if (courses.isEmpty()) {
-                courses.addAll(scrapeSubjectPages(driver, js, limit));
+            // Collect results with timeout to ensure we stay within time budget
+            for (Future<List<Course>> future : futures) {
+                try {
+                    List<Course> urlCourses = future.get(10, TimeUnit.SECONDS);
+                    courses.addAll(urlCourses);
+                } catch (Exception e) {
+                    System.out.println("Warning: Search took too long and was skipped: " + e.getMessage());
+                }
             }
 
-            // Limit the number of courses if necessary
-            if (courses.size() > limit && limit > 0) {
+            // Remove duplicates and limit results
+            courses = removeDuplicates(courses);
+            if (courses.size() > limit) {
                 courses = courses.subList(0, limit);
             }
 
         } catch (Exception e) {
-            System.err.println("Error in scraping Khan Academy: " + e.getMessage());
+            System.out.println("Error in Khan Academy scraper: " + e.getMessage());
             e.printStackTrace();
+        }
+
+        return courses;
+    }
+
+    /**
+     * Build search URLs from query
+     */
+    private List<String> buildSearchUrls(String query) {
+        List<String> urls = new ArrayList<>();
+
+        if (query == null || query.trim().isEmpty()) {
+            // Default URLs for empty query
+            urls.add(BASE_URL + "/math");
+            urls.add(BASE_URL + "/computing/computer-programming");
+            urls.add(BASE_URL + "/science");
+            return urls;
+        }
+
+        String[] topics = query.split(",");
+
+        for (String topic : topics) {
+            String cleanTopic = topic.trim();
+            if (!cleanTopic.isEmpty()) {
+                // Add direct search URL
+                urls.add(BASE_URL + "/search?page_search_query=" + cleanTopic.replace(" ", "+"));
+
+                // Add targeted URLs for better results
+                if (cleanTopic.toLowerCase().contains("python") ||
+                        cleanTopic.toLowerCase().contains("programming") ||
+                        cleanTopic.toLowerCase().contains("code") ||
+                        cleanTopic.toLowerCase().contains("computer")) {
+                    urls.add(BASE_URL + "/computing/computer-programming");
+                    urls.add(BASE_URL + "/computing/computer-science");
+                }
+
+                if (cleanTopic.toLowerCase().contains("math") ||
+                        cleanTopic.toLowerCase().contains("algebra") ||
+                        cleanTopic.toLowerCase().contains("calculus")) {
+                    urls.add(BASE_URL + "/math");
+                }
+
+                if (cleanTopic.toLowerCase().contains("science") ||
+                        cleanTopic.toLowerCase().contains("physics") ||
+                        cleanTopic.toLowerCase().contains("chemistry") ||
+                        cleanTopic.toLowerCase().contains("biology")) {
+                    urls.add(BASE_URL + "/science");
+                }
+            }
+        }
+
+        // Remove duplicates
+        return new ArrayList<>(new HashSet<>(urls));
+    }
+
+    /**
+     * Scrape courses from a specific URL
+     */
+    private List<Course> scrapeCoursesFromUrl(String url, int limit) {
+        List<Course> courses = new ArrayList<>();
+        WebDriver driver = null;
+
+        try {
+            // Initialize driver with optimized settings
+            driver = initializeDriver();
+
+            // Navigate to URL
+            driver.get(url);
+            Thread.sleep(MAX_WAIT_MS);
+
+            // Extract subject name
+            String subjectName = extractSubjectName(driver, url);
+
+            // Find course links
+            List<WebElement> links = findCourseLinks(driver);
+            Set<String> processedUrls = new HashSet<>();
+
+            int courseCount = 0;
+            for (WebElement link : links) {
+                if (courseCount >= Math.min(10, limit)) break;
+
+                try {
+                    String href = link.getAttribute("href");
+
+                    // Skip invalid or processed URLs
+                    if (href == null || href.isEmpty() || processedUrls.contains(href)) continue;
+
+                    // Keep only Khan Academy URLs with learning content
+                    if (!href.startsWith(BASE_URL) ||
+                            !(href.contains("/learn/") || href.contains("/course/") ||
+                                    href.contains("/unit/") || href.contains("/v/") ||
+                                    href.contains("/programming/") || href.contains("/computer") ||
+                                    href.contains("/math/") || href.contains("/science/"))) {
+                        continue;
+                    }
+
+                    processedUrls.add(href);
+
+                    // Extract course details
+                    String title = extractTitle(link, href);
+                    String description = extractDescription(link, driver, subjectName);
+
+                    // Create course object
+                    Course course = new Course();
+                    course.setTitle(title);
+                    course.setDescription(description);
+                    course.setUrl(href);
+                    course.setPrice("Free");
+                    course.setPlatform(getPlatformName());
+                    course.setRating(0.0); // Not rated
+
+                    courses.add(course);
+                    courseCount++;
+
+                } catch (Exception e) {
+                    // Skip problematic links
+                }
+            }
+
+        } catch (Exception e) {
+            System.out.println("Error processing " + url + ": " + e.getMessage());
         } finally {
-            // Clean up resources
+            // Ensure driver is closed
             if (driver != null) {
-                driver.quit();
+                try {
+                    driver.quit();
+                } catch (Exception e) {
+                    // Ignore cleanup errors
+                }
             }
         }
 
@@ -76,785 +202,185 @@ public class KhanAcademyScraperService implements CourseScraperService {
     }
 
     /**
-     * Initializes the Chrome WebDriver with appropriate settings.
-     * @return Configured WebDriver
+     * Initialize Chrome WebDriver with optimized settings
      */
     private WebDriver initializeDriver() {
-        System.out.println("Setting up Chrome driver for Khan Academy scraper...");
-
-        // Configure Chrome options for better scraping
         ChromeOptions options = new ChromeOptions();
-        options.addArguments("--start-maximized");
-        options.addArguments("--disable-notifications");
-        options.addArguments("--disable-popup-blocking");
-        options.addArguments("--disable-blink-features=AutomationControlled");
-        options.addArguments("--disable-infobars");
-        options.addArguments("--headless"); // Run in headless mode for server deployment
+        options.addArguments("--headless=new");
+        options.addArguments("--disable-gpu");
+        options.addArguments("--disable-dev-shm-usage");
+        options.addArguments("--no-sandbox");
+        options.addArguments("--disable-extensions");
+        options.addArguments("--disable-images");
+        options.addArguments("--blink-settings=imagesEnabled=false");
+        options.setPageLoadStrategy(PageLoadStrategy.EAGER);
 
-        // Initialize WebDriver
         WebDriver driver = new ChromeDriver(options);
-        driver.manage().timeouts().implicitlyWait(Duration.ofSeconds(WAIT_TIMEOUT));
+        driver.manage().timeouts().pageLoadTimeout(Duration.ofSeconds(WAIT_TIMEOUT));
+        driver.manage().timeouts().implicitlyWait(Duration.ofMillis(1000));
 
         return driver;
     }
 
     /**
-     * Searches for courses using the provided query.
-     * @param driver WebDriver instance
-     * @param js JavascriptExecutor for page interactions
-     * @param query Search query
-     * @param limit Maximum number of courses to return
-     * @return List of Course objects
+     * Extract title from link or URL
      */
-    private List<Course> searchCourses(WebDriver driver, JavascriptExecutor js, String query, int limit) {
-        List<Course> courses = new ArrayList<>();
+    private String extractTitle(WebElement link, String href) {
+        // Try to get text from the link
+        String title = link.getText().trim();
 
-        try {
-            // Navigate to Khan Academy search page
-            driver.get(BASE_URL + "/search?page=1&page_size=48&format=all&keyword=" + query.replace(" ", "+"));
-            System.out.println("Searching Khan Academy for: " + query);
-            Thread.sleep(5000);
-
-            // Handle any popups
-            handlePopups(driver);
-
-            // Scroll to load all content
-            scrollThroughPage(js);
-
-            // Find search results
-            List<WebElement> resultElements = driver.findElements(By.cssSelector(".search-result"));
-            if (resultElements.isEmpty()) {
-                resultElements = driver.findElements(By.cssSelector(".search-result-item"));
-            }
-            if (resultElements.isEmpty()) {
-                resultElements = driver.findElements(By.cssSelector("[data-test-id*='search-result']"));
-            }
-
-            System.out.println("Found " + resultElements.size() + " search results");
-
-            // Process each result
-            int count = 0;
-            for (WebElement element : resultElements) {
-                if (count >= limit && limit > 0) break;
-
-                try {
-                    Course course = extractCourseFromElement(element);
-                    if (course != null) {
-                        courses.add(course);
-                        count++;
-                    }
-                } catch (Exception e) {
-                    System.err.println("Error processing search result: " + e.getMessage());
-                }
-            }
-
-        } catch (Exception e) {
-            System.err.println("Error during search: " + e.getMessage());
+        // If empty, try to extract from URL
+        if (title.isEmpty() || title.length() < 3) {
+            String urlEnd = href.substring(href.lastIndexOf('/') + 1).replace('-', ' ');
+            title = capitalizeWords(urlEnd);
         }
 
-        return courses;
+        return title;
     }
 
     /**
-     * Scrapes courses from subject pages.
-     * @param driver WebDriver instance
-     * @param js JavascriptExecutor for page interactions
-     * @param limit Maximum number of courses to return
-     * @return List of Course objects
+     * Extract description from link context or parent elements
      */
-    private List<Course> scrapeSubjectPages(WebDriver driver, JavascriptExecutor js, int limit) {
-        List<Course> courses = new ArrayList<>();
+    private String extractDescription(WebElement link, WebDriver driver, String subject) {
+        String description = "";
 
         try {
-            // Navigate to subjects page
-            driver.get(BASE_URL + "/subjects");
-            System.out.println("Navigating to Khan Academy subjects page...");
-            Thread.sleep(5000);
+            // Try to find a description near the link
+            WebElement parent = link.findElement(By.xpath("./.."));
+            List<WebElement> paragraphs = parent.findElements(By.tagName("p"));
 
-            // Handle any popups
-            handlePopups(driver);
-
-            // Get URLs for all subjects
-            List<String> subjectUrls = getSubjectUrls(driver);
-            System.out.println("Found " + subjectUrls.size() + " subject areas");
-
-            // Process each subject until we reach the limit
-            int count = 0;
-            for (String url : subjectUrls) {
-                if (count >= limit && limit > 0) break;
-
-                System.out.println("Processing subject: " + url);
-
-                // Get courses from subject page
-                List<Course> subjectCourses = scrapeSubjectPage(driver, js, url);
-
-                // Add courses up to the limit
-                for (Course course : subjectCourses) {
-                    if (count >= limit && limit > 0) break;
-                    courses.add(course);
-                    count++;
-                }
-
-                // If we still need more courses, check course lists
-                if ((count < limit || limit <= 0) && courses.size() < 50) {
-                    List<String> courseListUrls = getCourseListUrls(driver, js, url);
-                    for (String courseListUrl : courseListUrls) {
-                        if (count >= limit && limit > 0) break;
-
-                        List<Course> listCourses = scrapeCourseListPage(driver, js, courseListUrl);
-                        for (Course course : listCourses) {
-                            if (count >= limit && limit > 0) break;
-                            courses.add(course);
-                            count++;
-                        }
-                    }
-                }
-            }
-
-            // If we still don't have enough courses, try direct course paths
-            if ((courses.size() < limit || limit <= 0) && courses.size() < 20) {
-                List<Course> directCourses = scrapeDirectCoursePaths(driver, js);
-                for (Course course : directCourses) {
-                    if (count >= limit && limit > 0) break;
-                    courses.add(course);
-                    count++;
-                }
-            }
-
-        } catch (Exception e) {
-            System.err.println("Error scraping subject pages: " + e.getMessage());
-        }
-
-        return courses;
-    }
-
-    /**
-     * Handles any popups that might appear on the page.
-     * @param driver WebDriver instance
-     */
-    private void handlePopups(WebDriver driver) {
-        System.out.println("Checking for popups...");
-
-        // List of common popup selectors
-        List<String> popupSelectors = List.of(
-                "button[data-test-id='cookie-banner-accept']",
-                ".cookie-notice-button",
-                ".smart-banner-close",
-                ".close-button",
-                ".modal-close",
-                "[aria-label='Close']",
-                "[data-test-id='close-button']"
-        );
-
-        // Try to close each type of popup
-        for (String selector : popupSelectors) {
-            try {
-                List<WebElement> popups = driver.findElements(By.cssSelector(selector));
-                for (WebElement popup : popups) {
-                    if (popup.isDisplayed()) {
-                        popup.click();
-                        Thread.sleep(500);
-                    }
-                }
-            } catch (Exception e) {
-                // Continue if popup not found or can't be closed
-                continue;
-            }
-        }
-    }
-
-    /**
-     * Scrolls through the page to load dynamic content.
-     * @param js JavascriptExecutor for scrolling
-     */
-    private void scrollThroughPage(JavascriptExecutor js) {
-        try {
-            // Track scroll height
-            long lastHeight = (long) js.executeScript("return document.body.scrollHeight");
-            int scrollAttempts = 0;
-            int maxScrollAttempts = 6; // Limit scrolling attempts
-
-            // Scroll incrementally
-            while (scrollAttempts < maxScrollAttempts) {
-                js.executeScript("window.scrollBy(0, 500);");
-                Thread.sleep(600);
-
-                long newHeight = (long) js.executeScript("return document.body.scrollHeight");
-                if (newHeight == lastHeight) {
-                    // Try one more time with a larger scroll
-                    js.executeScript("window.scrollBy(0, 1000);");
-                    Thread.sleep(800);
-
-                    newHeight = (long) js.executeScript("return document.body.scrollHeight");
-                    if (newHeight == lastHeight) {
-                        // No new content loaded, stop scrolling
+            if (!paragraphs.isEmpty()) {
+                for (WebElement p : paragraphs) {
+                    String text = p.getText().trim();
+                    if (!text.isEmpty() && text.length() > 15) {
+                        description = text;
                         break;
                     }
                 }
-                lastHeight = newHeight;
-                scrollAttempts++;
             }
-
-            // Scroll back to top
-            js.executeScript("window.scrollTo(0, 0);");
         } catch (Exception e) {
-            System.err.println("Error during scrolling: " + e.getMessage());
+            // Ignore errors in description extraction
         }
+
+        // If no description found, create a generic one
+        if (description.isEmpty()) {
+            description = "Learn " + subject + " with Khan Academy's interactive lessons";
+        }
+
+        return description;
     }
 
     /**
-     * Extracts URLs for all subject areas on Khan Academy.
-     * @param driver WebDriver instance
-     * @return List of subject URLs
+     * Extract subject name from URL or page title
      */
-    private List<String> getSubjectUrls(WebDriver driver) {
-        List<String> urls = new ArrayList<>();
+    private String extractSubjectName(WebDriver driver, String url) {
+        String subject = "";
 
+        // Try to get from page title
         try {
-            // Selectors for subject links
-            List<String> subjectSelectors = List.of(
-                    "a[role='button'][href*='/subject/']",
-                    ".subject-card a",
-                    "a[data-test-id*='subject-link']",
-                    "div[role='navigation'] a[href*='/subject/']",
-                    ".subject-link",
-                    ".subjectsList a",
-                    ".homepage-subject a"
-            );
-
-            // Try each selector
-            for (String selector : subjectSelectors) {
-                List<WebElement> subjectLinks = driver.findElements(By.cssSelector(selector));
-                if (!subjectLinks.isEmpty()) {
-                    for (WebElement link : subjectLinks) {
-                        String url = link.getAttribute("href");
-                        if (url != null && !url.isEmpty() && !urls.contains(url)) {
-                            urls.add(url);
-                        }
-                    }
-                }
-            }
-
-            // If no links found, use default subjects
-            if (urls.isEmpty()) {
-                System.out.println("No subject links found, using default subjects...");
-                urls.addAll(List.of(
-                        BASE_URL + "/math",
-                        BASE_URL + "/science",
-                        BASE_URL + "/computing",
-                        BASE_URL + "/humanities",
-                        BASE_URL + "/economics-finance-domain",
-                        BASE_URL + "/ela",
-                        BASE_URL + "/test-prep"
-                ));
-            }
-        } catch (Exception e) {
-            System.err.println("Error getting subject URLs: " + e.getMessage());
-        }
-
-        return urls;
-    }
-
-    /**
-     * Gets URLs for course list pages from a subject page.
-     * @param driver WebDriver instance
-     * @param js JavascriptExecutor for interactions
-     * @param subjectUrl The URL of the subject page
-     * @return List of URLs for course list pages
-     */
-    private List<String> getCourseListUrls(WebDriver driver, JavascriptExecutor js, String subjectUrl) {
-        List<String> urls = new ArrayList<>();
-
-        try {
-            driver.get(subjectUrl);
-            Thread.sleep(3000);
-
-            // Scroll to load all content
-            scrollThroughPage(js);
-
-            // Find links to course lists
-            List<WebElement> links = driver.findElements(By.cssSelector("a[href*='/learn']"));
-            links.addAll(driver.findElements(By.cssSelector("a[href*='/course']")));
-            links.addAll(driver.findElements(By.cssSelector("a[href*='/unit']")));
-            links.addAll(driver.findElements(By.cssSelector("a[href*='/topic']")));
-
-            for (WebElement link : links) {
-                String url = link.getAttribute("href");
-                if (url != null && !url.isEmpty() && !urls.contains(url)) {
-                    urls.add(url);
+            String pageTitle = driver.getTitle();
+            if (pageTitle != null && !pageTitle.isEmpty()) {
+                if (pageTitle.contains("|")) {
+                    subject = pageTitle.substring(0, pageTitle.indexOf("|")).trim();
+                } else if (pageTitle.contains("-")) {
+                    subject = pageTitle.substring(0, pageTitle.indexOf("-")).trim();
+                } else {
+                    subject = pageTitle.trim();
                 }
             }
         } catch (Exception e) {
-            System.err.println("Error getting course list URLs: " + e.getMessage());
+            // Ignore errors in subject extraction
         }
 
-        return urls;
-    }
-
-    /**
-     * Scrapes a single subject page for course information.
-     * @param driver WebDriver instance
-     * @param js JavascriptExecutor for interactions
-     * @param url The URL of the subject page
-     * @return List of Course objects for the subject
-     */
-    private List<Course> scrapeSubjectPage(WebDriver driver, JavascriptExecutor js, String url) {
-        List<Course> courses = new ArrayList<>();
-
-        try {
-            // Navigate to the subject page
-            driver.get(url);
-            System.out.println("Waiting for page to load: " + url);
-            Thread.sleep(3000);
-
-            // Scroll to load all content
-            scrollThroughPage(js);
-
-            // Extract the subject name from the page
-            String subjectName = getPageTitle(driver);
-
-            // Get all course cards or links
-            List<WebElement> courseElements = new ArrayList<>();
-
-            // Lists of selectors to try
-            List<String> courseContainerSelectors = List.of(
-                    ".topic-card",
-                    ".topic-container",
-                    ".course-item",
-                    ".unit-card",
-                    "[data-test-id*='topic-card']",
-                    "[data-test-id*='course-card']",
-                    ".tutorial-card"
-            );
-
-            // Try each container selector
-            for (String selector : courseContainerSelectors) {
-                List<WebElement> elements = driver.findElements(By.cssSelector(selector));
-                if (!elements.isEmpty()) {
-                    courseElements.addAll(elements);
+        // If still empty, extract from URL
+        if (subject.isEmpty()) {
+            // Extract from path segment
+            String[] pathSegments = url.replace(BASE_URL, "").split("/");
+            for (String segment : pathSegments) {
+                if (!segment.isEmpty() && !segment.contains("?")) {
+                    subject = segment.replace("-", " ");
+                    break;
                 }
             }
 
-            // If no course elements found, try direct links
-            if (courseElements.isEmpty()) {
-                List<WebElement> links = driver.findElements(By.cssSelector("a[href*='/learn/']"));
-                links.addAll(driver.findElements(By.cssSelector("a[href*='/course/']")));
-                links.addAll(driver.findElements(By.cssSelector("a[href*='/unit/']")));
-                courseElements.addAll(links);
-            }
-
-            // Process each course element
-            for (WebElement element : courseElements) {
-                try {
-                    Course course = extractCourseFromElement(element, subjectName);
-                    if (course != null) {
-                        courses.add(course);
-                    }
-                } catch (Exception e) {
-                    System.err.println("Error processing course element: " + e.getMessage());
-                }
-            }
-
-        } catch (Exception e) {
-            System.err.println("Error scraping page " + url + ": " + e.getMessage());
-        }
-
-        return courses;
-    }
-
-    /**
-     * Scrapes a course list page for detailed course information.
-     * @param driver WebDriver instance
-     * @param js JavascriptExecutor for interactions
-     * @param url The URL of the course list page
-     * @return List of Course objects from the page
-     */
-    private List<Course> scrapeCourseListPage(WebDriver driver, JavascriptExecutor js, String url) {
-        List<Course> courses = new ArrayList<>();
-
-        try {
-            // Navigate to the page
-            driver.get(url);
-            Thread.sleep(3000);
-
-            // Scroll to load all content
-            scrollThroughPage(js);
-
-            // Get page title as course category
-            String category = getPageTitle(driver);
-
-            // Find lesson items or content modules
-            List<WebElement> lessonElements = new ArrayList<>();
-
-            // Try multiple selectors for lesson items
-            List<String> lessonSelectors = List.of(
-                    ".lesson-card",
-                    ".video-card",
-                    ".tutorial-card",
-                    ".content-card",
-                    ".article-card",
-                    "[data-test-id*='unit-card']",
-                    "[data-test-id*='content-card']",
-                    "[data-test-id*='video-card']",
-                    "a[href*='/v/']"
-            );
-
-            // Try each selector
-            for (String selector : lessonSelectors) {
-                List<WebElement> elements = driver.findElements(By.cssSelector(selector));
-                if (!elements.isEmpty()) {
-                    lessonElements.addAll(elements);
-                }
-            }
-
-            // Process each lesson element
-            for (WebElement element : lessonElements) {
-                try {
-                    Course course = extractCourseFromElement(element, category);
-                    if (course != null) {
-                        courses.add(course);
-                    }
-                } catch (Exception e) {
-                    System.err.println("Error processing lesson element: " + e.getMessage());
-                }
-            }
-
-            // If no specific lessons found, add the page itself as a course
-            if (courses.isEmpty()) {
-                Course pageCourse = createCourseFromPage(driver, category, url);
-                if (pageCourse != null) {
-                    courses.add(pageCourse);
-                }
-            }
-
-        } catch (Exception e) {
-            System.err.println("Error scraping course list page " + url + ": " + e.getMessage());
-        }
-
-        return courses;
-    }
-
-    /**
-     * Scrapes courses from known direct paths as a fallback method.
-     * @param driver WebDriver instance
-     * @param js JavascriptExecutor for interactions
-     * @return List of Course objects
-     */
-    private List<Course> scrapeDirectCoursePaths(WebDriver driver, JavascriptExecutor js) {
-        List<Course> courses = new ArrayList<>();
-
-        // List of known course paths to try
-        List<String> coursePaths = List.of(
-                "/math/cc-sixth-grade-math",
-                "/math/cc-seventh-grade-math",
-                "/math/cc-eighth-grade-math",
-                "/math/algebra",
-                "/math/geometry",
-                "/math/algebra2",
-                "/math/precalculus",
-                "/math/ap-calculus-ab",
-                "/science/physics",
-                "/science/chemistry",
-                "/science/biology",
-                "/science/organic-chemistry",
-                "/computing/computer-programming",
-                "/computing/computer-science",
-                "/humanities/world-history",
-                "/humanities/us-history",
-                "/economics-finance-domain/core-finance"
-        );
-
-        for (String path : coursePaths) {
-            try {
-                String url = BASE_URL + path;
-                driver.get(url);
-                Thread.sleep(3000);
-
-                // Extract course data
-                String title = getPageTitle(driver);
-                Course course = createCourseFromPage(driver, title, url);
-                if (course != null) {
-                    courses.add(course);
-                }
-
-                // Also try to find sub-units on this page
-                scrollThroughPage(js);
-                List<Course> subCourses = scrapeCourseListPage(driver, js, url);
-                courses.addAll(subCourses);
-
-            } catch (Exception e) {
-                System.err.println("Error processing direct course path: " + e.getMessage());
+            // Fall back to "Khan Academy"
+            if (subject.isEmpty()) {
+                subject = "Khan Academy Course";
             }
         }
 
-        return courses;
+        return capitalizeWords(subject);
     }
 
     /**
-     * Gets the title of the current page.
-     * @param driver WebDriver instance
-     * @return The page title
+     * Try different strategies to find course links
      */
-    private String getPageTitle(WebDriver driver) {
-        try {
-            // Try to get title from h1 element first
-            List<WebElement> h1s = driver.findElements(By.tagName("h1"));
-            if (!h1s.isEmpty()) {
-                String title = h1s.get(0).getText().trim();
-                if (!title.isEmpty()) {
-                    return title;
-                }
-            }
+    private List<WebElement> findCourseLinks(WebDriver driver) {
+        List<WebElement> links = new ArrayList<>();
 
-            // Try other common title elements
-            List<String> titleSelectors = List.of(
-                    ".title-text",
-                    ".course-title",
-                    ".unit-title",
-                    "[data-test-id*='title']"
-            );
+        // Try multiple selectors to find course links
+        String[] selectors = {
+                "a.card", // Card links
+                "a.link_1uvuyao-o_O-link_cv47nc", // Course links
+                "a[data-test-id*='tutorial-card']", // Tutorial cards
+                "a[data-test-id*='course']", // Course links
+                "a[data-test-id*='lesson']", // Lesson links
+                "a.link_xt8zc8", // Another class used for course links
+                "a", // Fallback to all links
+        };
 
-            for (String selector : titleSelectors) {
-                List<WebElement> elements = driver.findElements(By.cssSelector(selector));
-                if (!elements.isEmpty()) {
-                    String title = elements.get(0).getText().trim();
-                    if (!title.isEmpty()) {
-                        return title;
-                    }
-                }
-            }
-
-            // Fall back to page title
-            return driver.getTitle().replace(" | Khan Academy", "").trim();
-
-        } catch (Exception e) {
-            return "Unknown Course";
-        }
-    }
-
-    /**
-     * Gets the description of the current page.
-     * @param driver WebDriver instance
-     * @return The page description
-     */
-    private String getPageDescription(WebDriver driver) {
-        try {
-            // Try to get description from meta tag
-            try {
-                WebElement metaDesc = driver.findElement(By.cssSelector("meta[name='description']"));
-                String content = metaDesc.getAttribute("content");
-                if (content != null && !content.isEmpty()) {
-                    return content;
-                }
-            } catch (Exception e) {
-                // Continue to other methods if meta tag not found
-            }
-
-            // Try common description elements
-            List<String> descSelectors = List.of(
-                    ".description",
-                    ".course-description",
-                    ".unit-description",
-                    "p.intro",
-                    "[data-test-id*='description']"
-            );
-
-            for (String selector : descSelectors) {
-                List<WebElement> elements = driver.findElements(By.cssSelector(selector));
-                if (!elements.isEmpty()) {
-                    String desc = elements.get(0).getText().trim();
-                    if (!desc.isEmpty()) {
-                        return desc;
-                    }
-                }
-            }
-
-            // If no description found
-            return "Learn about this topic on Khan Academy";
-
-        } catch (Exception e) {
-            return "No description available";
-        }
-    }
-
-    /**
-     * Extracts a Course object from a WebElement.
-     * @param element WebElement containing course data
-     * @return Course object or null if extraction fails
-     */
-    private Course extractCourseFromElement(WebElement element) {
-        return extractCourseFromElement(element, null);
-    }
-
-    /**
-     * Extracts a Course object from a WebElement with category context.
-     * @param element WebElement containing course data
-     * @param category Category/subject name for context
-     * @return Course object or null if extraction fails
-     */
-    private Course extractCourseFromElement(WebElement element, String category) {
-        try {
-            // Extract title
-            String title = element.getText().trim();
-
-            // If title is empty or too long, try to find a more specific title element
-            if (title.isEmpty() || title.length() > 100) {
-                WebElement titleElement = findElementBySelectors(element, List.of(
-                        "h2", "h3", ".title", "[data-test-id*='title']", "span"));
-                if (titleElement != null) {
-                    title = titleElement.getText().trim();
-                }
-            }
-
-            // Skip if still no valid title
-            if (title.isEmpty()) {
-                return null;
-            }
-
-            // Add category to title if available
-            if (category != null && !category.isEmpty()) {
-                title = category + ": " + title;
-            }
-
-            // Extract URL
-            String courseUrl;
-            if (element.getTagName().equalsIgnoreCase("a")) {
-                courseUrl = element.getAttribute("href");
-            } else {
-                WebElement link = findElementBySelectors(element, List.of("a"));
-                courseUrl = link != null ? link.getAttribute("href") : "";
-            }
-
-            // If no valid URL, skip
-            if (courseUrl == null || courseUrl.isEmpty()) {
-                return null;
-            }
-
-            // Extract description
-            String description = extractDescription(element);
-            if (description.equals("No description available") && category != null) {
-                description = "Course in " + category;
-            }
-
-            // Create and return the course object
-            return createCourse(title, description, courseUrl, element.getAttribute("outerHTML"));
-
-        } catch (Exception e) {
-            System.err.println("Error extracting course from element: " + e.getMessage());
-            return null;
-        }
-    }
-
-    /**
-     * Creates a Course object from page data.
-     * @param driver WebDriver instance
-     * @param title Course title
-     * @param url Course URL
-     * @return Course object
-     */
-    private Course createCourseFromPage(WebDriver driver, String title, String url) {
-        try {
-            String description = getPageDescription(driver);
-
-            // Get the HTML of the main course content
-            String htmlCode;
-            try {
-                List<String> contentSelectors = List.of(
-                        "main", "#main-content", ".course-container", ".unit-container", ".tutorial-container");
-
-                for (String selector : contentSelectors) {
-                    List<WebElement> elements = driver.findElements(By.cssSelector(selector));
-                    if (!elements.isEmpty()) {
-                        htmlCode = elements.get(0).getAttribute("outerHTML");
-                        return createCourse(title, description, url, htmlCode);
-                    }
-                }
-
-                // Fall back to body if main content area not found
-                htmlCode = driver.findElement(By.tagName("body")).getAttribute("outerHTML");
-
-            } catch (Exception e) {
-                htmlCode = "<div>HTML not available</div>";
-            }
-
-            return createCourse(title, description, url, htmlCode);
-
-        } catch (Exception e) {
-            System.err.println("Error creating course from page: " + e.getMessage());
-            return null;
-        }
-    }
-
-    /**
-     * Creates a Course object with the provided data.
-     * @param title Course title
-     * @param description Course description
-     * @param url Course URL
-     * @param htmlCode HTML content
-     * @return Course object
-     */
-    private Course createCourse(String title, String description, String url, String htmlCode) {
-        Course course = new Course();
-        course.setTitle(title);
-        course.setDescription(description);
-        course.setUrl(url);
-        course.setPrice("Free"); // Khan Academy courses are free
-        course.setPlatform("KhanAcademy");
-        course.setHtmlCode(htmlCode);
-
-        // Set default values for fields not available from Khan Academy
-        course.setRating(0.0);
-
-        return course;
-    }
-
-    /**
-     * Finds an element using multiple possible selectors.
-     * @param parent The parent element to search in
-     * @param selectors List of CSS selectors to try
-     * @return The first matching WebElement, or null if none found
-     */
-    private WebElement findElementBySelectors(WebElement parent, List<String> selectors) {
         for (String selector : selectors) {
             try {
-                List<WebElement> elements = parent.findElements(By.cssSelector(selector));
-                if (!elements.isEmpty()) {
-                    return elements.get(0);
+                List<WebElement> found = driver.findElements(By.cssSelector(selector));
+                if (!found.isEmpty()) {
+                    links.addAll(found);
+                    if (links.size() > 20) break; // Get a reasonable number to process
                 }
             } catch (Exception e) {
-                // Continue to next selector
+                // Try next selector
             }
         }
-        return null;
+
+        return links;
     }
 
     /**
-     * Extracts course description from an element.
-     * @param parent The parent element containing the description
-     * @return The extracted description or a default message
+     * Helper method to capitalize words
      */
-    private String extractDescription(WebElement parent) {
-        try {
-            // Selectors for description elements
-            List<String> descriptionSelectors = List.of(
-                    "p",
-                    ".description",
-                    "[data-test-id*='description']",
-                    ".card-description",
-                    ".summary"
-            );
+    private String capitalizeWords(String text) {
+        if (text == null || text.isEmpty()) return text;
 
-            // Try each selector
-            WebElement descElement = findElementBySelectors(parent, descriptionSelectors);
-            if (descElement != null) {
-                String text = descElement.getText().trim();
-                if (!text.isEmpty()) {
-                    return text;
-                }
+        StringBuilder result = new StringBuilder();
+        boolean capitalizeNext = true;
+
+        for (char c : text.toCharArray()) {
+            if (Character.isSpaceChar(c)) {
+                capitalizeNext = true;
+                result.append(c);
+            } else if (capitalizeNext) {
+                result.append(Character.toUpperCase(c));
+                capitalizeNext = false;
+            } else {
+                result.append(c);
             }
-        } catch (Exception e) {
-            // Ignore errors
         }
-        return "No description available";
+
+        return result.toString();
+    }
+
+    /**
+     * Remove duplicate courses based on URL
+     */
+    private List<Course> removeDuplicates(List<Course> courses) {
+        Map<String, Course> uniqueMap = new LinkedHashMap<>();
+
+        for (Course course : courses) {
+            // Only add if URL not already in map
+            if (!uniqueMap.containsKey(course.getUrl())) {
+                uniqueMap.put(course.getUrl(), course);
+            }
+        }
+
+        return new ArrayList<>(uniqueMap.values());
     }
 }
