@@ -13,15 +13,13 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Random;
+import java.util.*;
 
 @Service
 public class StanfordEducationScraperService implements CourseScraperService {
     @Autowired
     private CsvDataService csvDataService;
-    private static final int WAIT_TIME_SECONDS = 3;
+    private static final int WAIT_TIME_SECONDS = 5;
     private static final int MAX_COURSES = 5; // Limiting to top 5 courses as requested
     private final Random random = new Random();
 
@@ -35,9 +33,10 @@ public class StanfordEducationScraperService implements CourseScraperService {
         System.out.println("Starting to scrape Stanford courses for query: " + query);
         final int REQUIRED_COURSES = 5;
 
+        // Setup Chrome driver with headless options
         System.out.println("Setting up Chrome driver with headless options");
         ChromeOptions options = new ChromeOptions();
-        options.addArguments("--headless=new"); // Use the new headless mode if available
+        options.addArguments("--headless=new");
         options.addArguments("--window-size=1920,1080");
         options.addArguments("--disable-gpu");
         options.addArguments("--disable-blink-features=AutomationControlled");
@@ -51,7 +50,7 @@ public class StanfordEducationScraperService implements CourseScraperService {
         List<Course> courses = new ArrayList<>();
 
         try {
-            // Use the direct search URL with the query parameter
+            // Navigate to search page with query parameters
             String searchUrl = "https://online.stanford.edu/explore?keywords=" + query + "&filter%5B0%5D=free_or_paid%3Apaid";
             System.out.println("Navigating to search URL: " + searchUrl);
             driver.get(searchUrl);
@@ -62,40 +61,61 @@ public class StanfordEducationScraperService implements CourseScraperService {
             List<WebElement> courseElements = driver.findElements(By.cssSelector("a.node.node--type-course"));
 
             System.out.println("Found " + courseElements.size() + " course elements on the page");
-
-            // Determine how many courses to process
             int coursesToProcess = Math.min(limit, Math.min(courseElements.size(), MAX_COURSES));
             System.out.println("Will process " + coursesToProcess + " courses");
 
-            // Collect course URLs
+            // Collect course URLs from search results
             List<String> courseUrls = new ArrayList<>();
             for (int i = 0; i < coursesToProcess; i++) {
-                WebElement courseElement = courseElements.get(i);
-                String url = courseElement.getAttribute("href");
+                String url = courseElements.get(i).getAttribute("href");
                 System.out.println("Course #" + (i+1) + " URL: " + url);
                 courseUrls.add(url);
             }
 
-            // Process each course URL using the same WebDriver instance
-            System.out.println("Starting to process individual course pages...");
-            for (int i = 0; i < courseUrls.size(); i++) {
-                String courseUrl = courseUrls.get(i);
-                System.out.println("Processing course #" + (i+1) + ": " + courseUrl);
-                Course course = scrapeCourseDetails(driver, wait, courseUrl);
+            // Save the original tab handle
+            String originalHandle = driver.getWindowHandle();
+
+            // Open each course URL in a new tab concurrently using JavaScript
+            System.out.println("Opening course pages in new tabs...");
+            for (String courseUrl : courseUrls) {
+                ((JavascriptExecutor) driver).executeScript("window.open(arguments[0], '_blank');", courseUrl);
+            }
+
+            // Get all tab handles and remove the original search tab
+            Set<String> allHandles = driver.getWindowHandles();
+            allHandles.remove(originalHandle);
+
+            // Iterate over each course tab to scrape details
+            for (String handle : allHandles) {
+                driver.switchTo().window(handle);
+                System.out.println("Switched to tab with URL: " + driver.getCurrentUrl());
+                try {
+                    wait.until(ExpectedConditions.presenceOfElementLocated(By.tagName("body")));
+                } catch (TimeoutException te) {
+                    System.err.println("Timeout waiting for page load in tab: " + driver.getCurrentUrl());
+                }
+
+                Course course = scrapeCourseDetails(driver, wait, driver.getCurrentUrl());
                 if (course != null) {
                     courses.add(course);
                     System.out.println("Successfully added course: " + course.getTitle());
                     csvDataService.saveCourse(course);
                     System.out.println("Saved course to CSV");
                 } else {
-                    System.err.println("Failed to process course: " + courseUrl);
+                    System.err.println("Failed to process course: " + driver.getCurrentUrl());
                     Course demoCourse = createDemoCourse(query, courses.size() + 1);
                     courses.add(demoCourse);
                     csvDataService.saveCourse(demoCourse);
                     System.out.println("Added demo course in place of failed course");
                 }
+                // Close the course tab once processed
+                driver.close();
             }
+            // Switch back to the original search tab (if needed) and close it
+            driver.switchTo().window(originalHandle);
+            driver.close();
 
+            // If fewer than the required courses were scraped, add demo courses as fallback
             int demoCoursesNeeded = REQUIRED_COURSES - courses.size();
             if (demoCoursesNeeded > 0) {
                 System.out.println("Adding " + demoCoursesNeeded + " demo courses to reach required total of " + REQUIRED_COURSES);
@@ -109,7 +129,6 @@ public class StanfordEducationScraperService implements CourseScraperService {
         } catch (Exception e) {
             System.err.println("Error during course search: " + e.getMessage());
             e.printStackTrace();
-
             int demoCoursesNeeded = REQUIRED_COURSES - courses.size();
             if (demoCoursesNeeded > 0) {
                 System.out.println("Error occurred. Adding " + demoCoursesNeeded + " demo courses as fallback.");
@@ -121,7 +140,11 @@ public class StanfordEducationScraperService implements CourseScraperService {
             }
         } finally {
             System.out.println("Closing browser instance");
-            driver.quit();
+            try {
+                driver.quit();
+            } catch (Exception e) {
+                System.err.println("Error closing driver: " + e.getMessage());
+            }
         }
 
         System.out.println("Scraping completed. Found " + courses.size() + " courses");
@@ -135,8 +158,7 @@ public class StanfordEducationScraperService implements CourseScraperService {
         course.setPlatform(getPlatformName());
 
         try {
-            System.out.println("Navigating to course page");
-            driver.get(url);
+            System.out.println("Ensuring course page is loaded");
             wait.until(ExpectedConditions.presenceOfElementLocated(By.tagName("body")));
             System.out.println("Page loaded successfully");
 
@@ -166,7 +188,7 @@ public class StanfordEducationScraperService implements CourseScraperService {
                 }
             } catch (Exception e) {
                 System.err.println("Could not extract title: " + e.getMessage());
-                return null; // Skip this course if we can't even get the title
+                return null; // Skip this course if title is missing
             }
 
             // Extract description
@@ -217,13 +239,13 @@ public class StanfordEducationScraperService implements CourseScraperService {
     private Course createDemoCourse(String query, int index) {
         Course demoCourse = new Course();
         demoCourse.setPlatform(getPlatformName());
-        demoCourse.setTitle(getPlatformName() + " Course " + index );
-        demoCourse.setDescription("This is a topic on which course is not offered by this site.");
+        demoCourse.setTitle(getPlatformName() + " Course " + index);
+        demoCourse.setDescription("This is a topic on which a course is not offered by this site.");
         demoCourse.setUrl("N/A");
         demoCourse.setPrice("N/A");
         demoCourse.setRating(0.0);
         demoCourse.setHtmlCode("N/A");
-        demoCourse.setExtractedText("This site not offers course on this topic");
+        demoCourse.setExtractedText("This site does not offer a course on this topic");
         System.out.println("Created demo course: " + demoCourse.getTitle());
         return demoCourse;
     }

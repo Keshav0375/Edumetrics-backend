@@ -1,4 +1,6 @@
-package com.Edumetrics.EduApp.model;
+package com.Edumetrics.EduApp.service;
+
+import com.Edumetrics.EduApp.model.Course;
 
 import java.util.List;
 import java.util.Map;

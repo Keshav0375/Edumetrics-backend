@@ -1,13 +1,22 @@
 package com.Edumetrics.EduApp.controller;
 
 import com.Edumetrics.EduApp.model.Course;
-import com.Edumetrics.EduApp.model.ScrapeResponse;
+import com.Edumetrics.EduApp.service.ScrapeResponse;
 import com.Edumetrics.EduApp.service.CsvDataService;
 import com.Edumetrics.EduApp.service.ScraperManagerService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import com.Edumetrics.EduApp.model.Response;
+import com.Edumetrics.EduApp.model.URLFrequencyKeywordNode;
+import com.Edumetrics.EduApp.model.WordPositionFrequencyStorage;
+import com.Edumetrics.EduApp.service.InvertedIndexing;
+import com.Edumetrics.EduApp.service.PageRanking;
+import com.Edumetrics.EduApp.service.WordFrequencyService;
+import com.Edumetrics.EduApp.model.WordFrequencyData;
+
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -100,5 +109,101 @@ public class CourseController {
 
         response.setExecutionTimeMs(System.currentTimeMillis() - startTime);
         return ResponseEntity.ok(response);
+    }
+
+    @GetMapping("/getPageRank")
+    @ResponseBody
+    public static Response<URLFrequencyKeywordNode> getPageRanking(@RequestParam("searchWord") String searchWord) {
+        Response<URLFrequencyKeywordNode> response=new Response<URLFrequencyKeywordNode>();
+        ArrayList<URLFrequencyKeywordNode> finalList=new ArrayList<URLFrequencyKeywordNode>();
+        try {
+            if(!searchWord.matches("[a-zA-Z]+")) {
+                response.setStatusCode(-1);
+                response.setMessage("Word received is not valid ");
+                response.setData(finalList);
+                return response;
+            }
+
+            System.out.println("Word to be Searched::"+searchWord);
+            PageRanking pageRankinginstance=new PageRanking();
+            finalList=pageRankinginstance.rankPage(searchWord);
+            if(finalList==null || finalList.size()==0) {
+                finalList=new ArrayList<URLFrequencyKeywordNode>();
+                response.setMessage("No Data Found");
+            }else {
+                response.setMessage("Successfully Found Data");
+            }
+        }catch(Exception e) {
+            System.out.println("Exception in Controller getPageRanking() as "+ e);
+            response.setStatusCode(-1);
+            response.setMessage("Exception arised as "+e);
+        }
+
+        response.setData(finalList);
+
+        return response;
+    }
+
+    @GetMapping("/getInvertedIndex")
+    @ResponseBody
+    public static Response<WordPositionFrequencyStorage> getInvertedIndex(@RequestParam("searchWord") String searchWord) {
+        Response<WordPositionFrequencyStorage> response=new Response<WordPositionFrequencyStorage>();
+        ArrayList<WordPositionFrequencyStorage> finalList=new ArrayList<WordPositionFrequencyStorage>();
+        try {
+            if(!searchWord.matches("[a-zA-Z]+")) {
+                response.setStatusCode(-1);
+                response.setMessage("Word received is not valid ");
+                response.setData(finalList);
+                return response;
+            }
+
+            System.out.println("Word to be Searched::"+searchWord);
+            InvertedIndexing inv=new InvertedIndexing();
+            finalList=inv.getInvertedIndexInformation(searchWord);
+            if(finalList==null || finalList.size()==0) {
+                finalList=new ArrayList<WordPositionFrequencyStorage>();
+                response.setMessage("No Data Found");
+            }else {
+                response.setMessage("Successfully Found Data");
+            }
+        }catch(Exception e) {
+            System.out.println("Exception in Controller getPageRanking() as "+ e);
+            response.setStatusCode(-1);
+            response.setMessage("Exception arised as "+e);
+        }
+        response.setData(finalList);
+        return response;
+    }
+
+    @GetMapping("/getFrequencyCount")
+    @ResponseBody
+    public static Response getFrequency(@RequestParam("keyword") String searchWord) {
+        Response<WordFrequencyData> response=new Response();
+        WordFrequencyData frequencyCount;
+        try {
+            if(!searchWord.matches("[a-zA-Z]+")) {
+                response.setStatusCode(-1);
+                response.setMessage("Word received is not valid ");
+                response.setData(new ArrayList<WordFrequencyData>());
+                return response;
+            }
+
+            System.out.println("Word to be Searched::"+searchWord);
+            WordFrequencyService inv=new WordFrequencyService();
+            frequencyCount=inv.countWordOccurrences(searchWord);
+            ArrayList<WordFrequencyData> answer=new ArrayList<WordFrequencyData>();
+            answer.add(frequencyCount);
+            response.setData(answer);
+            response.setMessage("Successfully Found Data");
+
+
+        }catch(Exception e) {
+            System.out.println("Exception in Controller getPageRanking() as "+ e);
+            response.setStatusCode(-1);
+            response.setMessage("Exception arised as "+e);
+            response.setData(new ArrayList<WordFrequencyData>());
+        }
+
+        return response;
     }
 }
