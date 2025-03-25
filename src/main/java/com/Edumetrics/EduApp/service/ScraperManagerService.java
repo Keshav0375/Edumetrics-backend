@@ -36,6 +36,7 @@ public class ScraperManagerService {
      * @return List of scraped courses
      */
     public List<Course> scrapePlatform(String platformName, String query, int limit, boolean saveToCSV) {
+
         CourseScraperService service = findScraperByName(platformName);
         if (service == null) {
             throw new IllegalArgumentException("Unsupported platform: " + platformName);
@@ -93,6 +94,7 @@ public class ScraperManagerService {
      */
     private CourseScraperService findScraperByName(String platformName) {
         for (CourseScraperService service : scraperServices) {
+            System.out.println("service.getPlatformName() = " + service.getPlatformName());
             if (service.getPlatformName().equalsIgnoreCase(platformName)) {
                 return service;
             }

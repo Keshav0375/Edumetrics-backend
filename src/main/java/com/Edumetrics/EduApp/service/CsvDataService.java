@@ -37,13 +37,13 @@ public class CsvDataService {
                     .withHeader(fileExists ? null : HEADERS))) {
 
                 printer.printRecord(
-                        course.getTitle(),
-                        course.getDescription(),
-                        course.getUrl(),
-                        course.getPrice(),
-                        course.getRating(),
-                        course.getPlatform(),
-                        course.getExtractedText()
+                        formattingForCSV(course.getTitle()).toString(),
+                        formattingForCSV(course.getDescription()).toString(),
+                                formattingForCSV(course.getUrl()).toString(),
+                                        formattingForCSV(course.getPrice()).toString(),
+                                                formattingForCSV(String.valueOf(course.getRating())).toString(),
+                                                        formattingForCSV(course.getPlatform()).toString(),
+                                                                formattingForCSV(course.getExtractedText()).toString()
                 );
 
                 System.out.println("Course saved to CSV: " + course.getTitle());
@@ -110,4 +110,20 @@ public class CsvDataService {
 
         return filteredCourses;
     }
+
+    private CharSequence formattingForCSV(String value) {
+        // TODO Auto-generated method stub
+        try {
+            if (value.contains(",") || value.contains("\"") || value.contains("\n")) {
+                value = value.replace("\"", "\"\"");
+                value=value.replaceAll(",", "");
+                return "\"" + value + "\"";
+            }else {
+                return value;
+            }
+        }catch(Exception e) {
+            return "\"" + " " + "\"";
+}
+    }
+
 }

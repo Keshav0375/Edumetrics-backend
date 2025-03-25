@@ -1,20 +1,16 @@
 package com.Edumetrics.EduApp.controller;
 
-import com.Edumetrics.EduApp.model.Course;
-import com.Edumetrics.EduApp.service.ScrapeResponse;
-import com.Edumetrics.EduApp.service.CsvDataService;
-import com.Edumetrics.EduApp.service.ScraperManagerService;
+import com.Edumetrics.EduApp.model.*;
+import com.Edumetrics.EduApp.service.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import com.Edumetrics.EduApp.model.Response;
-import com.Edumetrics.EduApp.model.URLFrequencyKeywordNode;
-import com.Edumetrics.EduApp.model.WordPositionFrequencyStorage;
-import com.Edumetrics.EduApp.service.InvertedIndexing;
-import com.Edumetrics.EduApp.service.PageRanking;
-import com.Edumetrics.EduApp.service.WordFrequencyService;
-import com.Edumetrics.EduApp.model.WordFrequencyData;
+import com.Edumetrics.EduApp.service.WordCompletionService;
+import com.Edumetrics.EduApp.service.SpellCheckerService;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -189,8 +185,8 @@ public class CourseController {
             }
 
             System.out.println("Word to be Searched::"+searchWord);
-            WordFrequencyService inv=new WordFrequencyService();
-            frequencyCount=inv.countWordOccurrences(searchWord);
+            WordFrequencyService frequency=new WordFrequencyService();
+            frequencyCount=frequency.countWordOccurrences(searchWord);
             ArrayList<WordFrequencyData> answer=new ArrayList<WordFrequencyData>();
             answer.add(frequencyCount);
             response.setData(answer);
@@ -198,10 +194,34 @@ public class CourseController {
 
 
         }catch(Exception e) {
-            System.out.println("Exception in Controller getPageRanking() as "+ e);
+            System.out.println("Exception in Controller getFrequency() as "+ e);
             response.setStatusCode(-1);
             response.setMessage("Exception arised as "+e);
             response.setData(new ArrayList<WordFrequencyData>());
+        }
+
+        return response;
+    }
+
+    @GetMapping("/verifyDetails")
+    @ResponseBody
+    public static Response<FormDetails> verifyDetails(@RequestBody FormDetails  formDetails) {
+        Response<FormDetails> response=new Response();
+        FormDetails validator;
+        try {
+            FeedbackFormValidator valid=new FeedbackFormValidator();
+            validator=valid.validateFeedbackForm(formDetails.getName(), formDetails.getEmailAddress(), formDetails.getText(), formDetails.getPhoneNumber());
+            ArrayList<FormDetails> answer=new ArrayList<FormDetails>();
+            answer.add(validator);
+            response.setData(answer);
+            response.setMessage("Successfully Found Data");
+
+
+        }catch(Exception e) {
+            System.out.println("Exception in Controller verifyDetails() as "+ e);
+            response.setStatusCode(-1);
+            response.setMessage("Exception arised as "+e);
+            response.setData(new ArrayList<FormDetails>());
         }
 
         return response;

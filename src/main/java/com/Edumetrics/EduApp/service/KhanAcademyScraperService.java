@@ -1,461 +1,681 @@
 package com.Edumetrics.EduApp.service;
-
-import com.Edumetrics.EduApp.model.Course;
-import io.github.bonigarcia.wdm.WebDriverManager;
-import org.openqa.selenium.*;
+import org.openqa.selenium.By;
+import org.openqa.selenium.PageLoadStrategy;
+import org.openqa.selenium.WebDriver;
+import org.openqa.selenium.WebElement;
 import org.openqa.selenium.chrome.ChromeDriver;
 import org.openqa.selenium.chrome.ChromeOptions;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import com.Edumetrics.EduApp.model.Course;
+
+import java.io.FileWriter;
+import java.io.IOException;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
-//@Service
-public class KhanAcademyScraperService implements CourseScraperService {
-    @Autowired
-    private CsvDataService csvDataService;
-
-    // Constants optimized for performance and reliability
+/**
+ * Khan Academy course scraper focusing on programming languages (Java, Python, JavaScript, HTML, CSS),
+ * Computer Science, and Entrepreneurship with limited search depth
+ */
+@Service
+public class KhanAcademyScraperService implements CourseScraperService{
+    // Constants
     private static final int WAIT_TIMEOUT = 5;
     private static final String BASE_URL = "https://www.khanacademy.org";
-    private static final int MAX_WAIT_MS = 400;
-    private static final int THREAD_POOL_SIZE = 4;
-    private static final double MIN_RELEVANCE_SCORE = 3.0;
-    private static final int TARGET_TOTAL_COURSES = 20;
-    private static final int MIN_COURSES_REQUIRED = 5;
+    private static final String OUTPUT_FILE = "KhanAcademyProgrammingAndCS.csv";
+    private static final int THREAD_POOL_SIZE = 1; // Reduced for more sequential behavior
+    private static final int MAX_WAIT_MS = 500;
+    private static final int PROGRAMMING_COURSE_TARGET = 10; // Target for programming language courses
+    private static final int CS_COURSE_TARGET = 15; // Target for CS courses
+    private static final int TOTAL_COURSE_TARGET = 25; // Total target including entrepreneurship
+    private static final ConcurrentHashMap<String, Boolean> processedUrls = new ConcurrentHashMap<>();
+    private static final AtomicInteger programmingCourseCounter = new AtomicInteger(0);
+    private static final AtomicInteger csCourseCounter = new AtomicInteger(0);
+    private static final AtomicInteger entrepreneurshipCourseCounter = new AtomicInteger(0);
+    private static final int MAX_DEPTH = 2; // Reduced depth to avoid going deep into courses
 
-    // ExecutorService for parallel processing
-    private final ExecutorService executorService = Executors.newFixedThreadPool(THREAD_POOL_SIZE);
-    private final AtomicInteger totalCoursesCollected = new AtomicInteger(0);
+    // Simplified non-subject patterns
+    private static final List<String> NON_SUBJECT_PATTERNS = Arrays.asList(
+            "skip", "login", "donate", "sign up", "help", "about", "careers",
+            "account", "profile", "contact", "support", "privacy", "terms"
+    );
+
+    // Target subject patterns for Programming Languages
+    private static final List<String> PROGRAMMING_LANGUAGE_PATTERNS = Arrays.asList(
+            "java ", "python", "javascript", "html", "css", "programming language",
+            "coding syntax", "language fundamentals", "web languages"
+    );
+
+    // Target subject patterns for Computer Science
+    private static final List<String> CS_SUBJECT_PATTERNS = Arrays.asList(
+            "computer"
+//            "computer", "program", "algorithm", "coding", "software", "app development",
+//            "web development", "data structure", "computing", "code"
+    );
+
+    // Target subject patterns for Entrepreneurship
+    private static final List<String> ENTREPRENEURSHIP_SUBJECT_PATTERNS = Arrays.asList(
+            "entrepreneur", "business", "startup", "finance", "economics", "market",
+            "leadership", "management", "venture", "capital", "innovation"
+    );
+
+    // Current search phase
+    private static volatile int searchPhase = 0; // 0 = Programming, 1 = CS, 2 = Entrepreneurship
+
+
+    // Main method
+    @Override
+    public  ArrayList<Course> scrapeCourses(String query, int limit) {
+        long startTime = System.currentTimeMillis();
+
+        try {
+            System.out.println("Starting Khan Academy Scraper - Prioritizing Programming Languages, CS, then Entrepreneurship");
+
+            // First phase: Programming Languages
+            searchPhase = 0;
+            System.out.println("Phase 1: Programming Languages - Target: " + PROGRAMMING_COURSE_TARGET + " courses");
+            List<Course> programmingResults = searchForCourses(generateProgrammingLanguageUrls());
+            System.out.println("Completed Programming Languages search. Found " + programmingResults.size() + " courses.");
+
+            // Second phase: Computer Science
+//            searchPhase = 1;
+//            System.out.println("Phase 2: Computer Science - Target: " + CS_COURSE_TARGET + " courses");
+//            List<Course> csResults = searchForCourses(generateCSSubjectUrls());
+//            System.out.println("Completed CS search. Found " + csResults.size() + " Computer Science courses.");
+
+//            // Third phase: Entrepreneurship
+//            searchPhase = 2;
+//            int remainingTarget = TOTAL_COURSE_TARGET - programmingResults.size() - csResults.size();
+//            System.out.println("Phase 3: Entrepreneurship - Target: " + remainingTarget + " more courses");
+//            List<Course> entrepreneurshipResults = searchForCourses(generateEntrepreneurshipSubjectUrls());
+//            System.out.println("Completed Entrepreneurship search. Found " + entrepreneurshipResults.size() + " Entrepreneurship courses.");
+
+            // Combine results
+            List<Course> allCourses = new ArrayList<>(programmingResults);
+//            allCourses.addAll(csResults);
+//            allCourses.addAll(entrepreneurshipResults);
+
+            // Remove any duplicates
+            List<Course> uniqueCourses = removeDuplicates(allCourses);
+
+
+            // Save results
+//            saveToCsv(uniqueCourses, OUTPUT_FILE);
+
+            // Print completion message
+            long endTime = System.currentTimeMillis();
+            System.out.println("Scraped " + uniqueCourses.size() + " total courses in " +
+                    ((endTime - startTime) / 1000.0) + " seconds");
+            System.out.println("Data saved to " + OUTPUT_FILE);
+            ArrayList<Course> arrayListOfString = new ArrayList(uniqueCourses);
+            return arrayListOfString;
+
+        } catch (Exception e) {
+            System.out.println("Error in main process: " + e.getMessage());
+            e.printStackTrace();
+            return new ArrayList<Course>();
+        }
+    }
 
     @Override
     public String getPlatformName() {
         return "KhanAcademy";
     }
 
-    @Override
-    public List<Course> scrapeCourses(String query, int limit) {
-        WebDriverManager.chromedriver().setup();
-        List<Course> courses = new ArrayList<>();
+    /**
+     * Search for courses with a specific target category
+     */
+    private static List<Course> searchForCourses(List<String> startUrls) {
+        List<Course> foundCourses = Collections.synchronizedList(new ArrayList<>());
 
         try {
-            // Parse user topics from query
-            List<String> userTopics = parseUserTopics(query);
+            // Process URLs in parallel with improved concurrency
+            ExecutorService executor = Executors.newFixedThreadPool(THREAD_POOL_SIZE);
 
-            // Build search URLs based on query
-            List<String> searchUrls = buildSearchUrls(query);
-            List<Future<List<Course>>> futures = new ArrayList<>();
+            // Use a concurrent queue for breadth-first crawling
+            BlockingQueue<ScrapingTask> scrapingQueue = new LinkedBlockingQueue<>();
+            startUrls.forEach(url -> scrapingQueue.add(new ScrapingTask(url, 0)));
 
-            // Reset counter for this search
-            totalCoursesCollected.set(0);
+            // Counter for active threads
+            AtomicInteger activeThreads = new AtomicInteger(0);
+            CountDownLatch completionLatch = new CountDownLatch(THREAD_POOL_SIZE);
 
-            // Submit tasks to executor service
-            for (String url : searchUrls) {
-                futures.add(executorService.submit(() -> scrapeCoursesFromUrl(url, limit, userTopics)));
+            // Target counter based on current phase
+            AtomicInteger currentCounter;
+            int currentTarget;
+
+            if (searchPhase == 0) {
+                currentCounter = programmingCourseCounter;
+                currentTarget = PROGRAMMING_COURSE_TARGET;
+            } else if (searchPhase == 1) {
+                currentCounter = csCourseCounter;
+                currentTarget = CS_COURSE_TARGET;
+            } else {
+                currentCounter = entrepreneurshipCourseCounter;
+                currentTarget = TOTAL_COURSE_TARGET - programmingCourseCounter.get() - csCourseCounter.get();
             }
 
-            // Collect results with timeout to ensure we stay within time budget
-            for (Future<List<Course>> future : futures) {
-                try {
-                    List<Course> urlCourses = future.get(5, TimeUnit.SECONDS);
-                    courses.addAll(urlCourses);
-                } catch (Exception e) {
-                    System.out.println("Warning: Search took too long and was skipped: " + e.getMessage());
-                }
-            }
-
-            // Handle case where not enough courses were found
-            if (courses.size() < MIN_COURSES_REQUIRED) {
-                System.out.println("Not enough courses found. Searching more deeply...");
-                List<String> deepSearchUrls = generateDeepSearchUrls(userTopics);
-                for (String url : deepSearchUrls) {
+            // Start worker threads
+            for (int i = 0; i < THREAD_POOL_SIZE; i++) {
+                executor.submit(() -> {
                     try {
-                        List<Course> deepCourses = scrapeCoursesFromUrl(url, limit, userTopics);
-                        courses.addAll(deepCourses);
-                    } catch (Exception e) {
-                        // Continue with next URL
-                    }
-                    if (courses.size() >= MIN_COURSES_REQUIRED) break;
-                }
-            }
+                        while (currentCounter.get() < currentTarget) {
+                            ScrapingTask task = scrapingQueue.poll(100, TimeUnit.MILLISECONDS);
+                            if (task == null) {
+                                // If no tasks for a while and enough courses or no active threads, exit
+                                if (currentCounter.get() >= currentTarget ||
+                                        (activeThreads.get() <= 1 && scrapingQueue.isEmpty())) {
+                                    break;
+                                }
+                                continue;
+                            }
 
-            // Filter low-relevance courses
-            Map<Course, Double> scoreMap = new HashMap<>();
-            for (Course course : courses) {
-                double score = calculateRelevanceScore(course, userTopics);
-                scoreMap.put(course, score);
-            }
+                            activeThreads.incrementAndGet();
+                            try {
+                                // Process URL if not already processed
+                                if (processedUrls.putIfAbsent(task.url, Boolean.TRUE) == null) {
+                                    ScrapeResult result = scrapeCourses1(task.url, task.depth);
 
-            courses.removeIf(course -> scoreMap.get(course) < MIN_RELEVANCE_SCORE);
+                                    // Add found courses
+                                    if (!result.courses.isEmpty()) {
+                                        foundCourses.addAll(result.courses);
+                                        int currentCount = currentCounter.addAndGet(result.courses.size());
+                                        System.out.println("Found " + result.courses.size() +
+                                                " courses from " + task.url + ". Total: " +
+                                                currentCount + "/" + currentTarget);
+                                    }
 
-            // Remove duplicates, sort by relevance and limit results
-            courses = removeDuplicates(courses);
-            courses.sort((c1, c2) -> Double.compare(scoreMap.getOrDefault(c2, 0.0), scoreMap.getOrDefault(c1, 0.0)));
-
-            if (courses.size() > limit) {
-                courses = courses.subList(0, limit);
-            }
-
-        } catch (Exception e) {
-            System.out.println("Error in Khan Academy scraper: " + e.getMessage());
-            e.printStackTrace();
-        }
-
-        return courses;
-    }
-
-    /**
-     * Parse user topics from query string
-     */
-    private List<String> parseUserTopics(String query) {
-        List<String> userTopics = new ArrayList<>();
-
-        if (query == null || query.trim().isEmpty()) {
-            return userTopics;
-        }
-
-        String[] topics = query.split(",");
-        for (String topic : topics) {
-            String cleanTopic = topic.trim().toLowerCase();
-            if (!cleanTopic.isEmpty()) {
-                userTopics.add(cleanTopic);
-            }
-        }
-
-        return userTopics;
-    }
-
-    /**
-     * Build search URLs from query
-     */
-    private List<String> buildSearchUrls(String query) {
-        List<String> urls = new ArrayList<>();
-
-        if (query == null || query.trim().isEmpty()) {
-            // Default URLs for empty query
-            urls.add(BASE_URL + "/math");
-            urls.add(BASE_URL + "/computing/computer-programming");
-            urls.add(BASE_URL + "/science");
-            return urls;
-        }
-
-        String[] topics = query.split(",");
-
-        for (String topic : topics) {
-            String cleanTopic = topic.trim();
-            if (!cleanTopic.isEmpty()) {
-                // Add direct search URLs
-                urls.add(BASE_URL + "/search?page_search_query=%22" + cleanTopic.replace(" ", "+") + "%22");
-                urls.add(BASE_URL + "/search?page_search_query=" + cleanTopic.replace(" ", "+"));
-                urls.add(BASE_URL + "/search?page_search_query=" + cleanTopic.replace(" ", "+") + "+course");
-
-                // Add topic-specific URLs
-                String lowerTopic = cleanTopic.toLowerCase();
-                if (lowerTopic.contains("python")) {
-                    urls.add(BASE_URL + "/computing/computer-programming/programming");
-                    urls.add(BASE_URL + "/computing/computer-science/algorithms");
-                } else if (lowerTopic.contains("javascript")) {
-                    urls.add(BASE_URL + "/computing/computer-programming/html-css-js");
-                } else if (lowerTopic.contains("html") || lowerTopic.contains("css")) {
-                    urls.add(BASE_URL + "/computing/computer-programming/html-css");
-                } else if (lowerTopic.contains("math")) {
-                    if (lowerTopic.contains("algebra")) {
-                        urls.add(BASE_URL + "/math/algebra");
-                        urls.add(BASE_URL + "/math/linear-algebra");
-                    } else if (lowerTopic.contains("calculus")) {
-                        urls.add(BASE_URL + "/math/calculus-home");
-                        urls.add(BASE_URL + "/math/ap-calculus-ab");
-                    } else if (lowerTopic.contains("geometry")) {
-                        urls.add(BASE_URL + "/math/geometry");
-                    } else {
-                        urls.add(BASE_URL + "/math");
-                    }
-                } else if (lowerTopic.contains("physics")) {
-                    urls.add(BASE_URL + "/science/physics");
-                    urls.add(BASE_URL + "/science/ap-physics-1");
-                } else if (lowerTopic.contains("chemistry")) {
-                    urls.add(BASE_URL + "/science/chemistry");
-                    urls.add(BASE_URL + "/science/organic-chemistry");
-                } else if (lowerTopic.contains("biology")) {
-                    urls.add(BASE_URL + "/science/biology");
-                    urls.add(BASE_URL + "/science/ap-biology");
-                } else if (lowerTopic.contains("history")) {
-                    urls.add(BASE_URL + "/humanities/world-history");
-                    urls.add(BASE_URL + "/humanities/us-history");
-                }
-
-                // Add category URLs based on topic keywords
-                if (lowerTopic.contains("programming") ||
-                        lowerTopic.contains("code") ||
-                        lowerTopic.contains("computer")) {
-                    urls.add(BASE_URL + "/computing/computer-programming");
-                    urls.add(BASE_URL + "/computing/computer-science");
-                } else if (lowerTopic.contains("science") ||
-                        lowerTopic.contains("physics") ||
-                        lowerTopic.contains("chemistry") ||
-                        lowerTopic.contains("biology")) {
-                    urls.add(BASE_URL + "/science");
-                }
-            }
-        }
-
-        // Remove duplicates
-        return new ArrayList<>(new HashSet<>(urls));
-    }
-
-    /**
-     * Generate deeper search URLs for specific user topics
-     */
-    private List<String> generateDeepSearchUrls(List<String> topics) {
-        List<String> deepUrls = new ArrayList<>();
-        Map<String, String[]> topicToPaths = new HashMap<>();
-
-        // Define topic-specific paths
-        topicToPaths.put("python", new String[]{
-                "/computing/computer-programming/programming",
-                "/computing/computer-science/algorithms",
-                "/computing/ap-computer-science-principles"
-        });
-        topicToPaths.put("javascript", new String[]{
-                "/computing/computer-programming/html-css-js",
-                "/computing/computer-programming/programming/drawing-basics"
-        });
-        topicToPaths.put("html", new String[]{
-                "/computing/computer-programming/html-css",
-                "/computing/computer-programming/html-css-js"
-        });
-        topicToPaths.put("css", new String[]{
-                "/computing/computer-programming/html-css",
-                "/computing/computer-programming/html-css-js"
-        });
-        topicToPaths.put("physics", new String[]{
-                "/science/physics",
-                "/science/ap-college-physics-1"
-        });
-        topicToPaths.put("chemistry", new String[]{
-                "/science/chemistry",
-                "/science/organic-chemistry"
-        });
-        topicToPaths.put("biology", new String[]{
-                "/science/biology",
-                "/science/ap-biology"
-        });
-        topicToPaths.put("algebra", new String[]{
-                "/math/algebra",
-                "/math/linear-algebra"
-        });
-        topicToPaths.put("calculus", new String[]{
-                "/math/calculus-1",
-                "/math/ap-calculus-ab"
-        });
-        topicToPaths.put("geometry", new String[]{
-                "/math/geometry",
-                "/math/basic-geo"
-        });
-
-        // Generate deep search URLs
-        for (String topic : topics) {
-            String[] paths = topicToPaths.get(topic);
-            if (paths != null) {
-                for (String path : paths) {
-                    deepUrls.add(BASE_URL + path);
-                }
-            }
-
-            // Add advanced search parameters
-            deepUrls.add(BASE_URL + "/search?referer=%2Fsearch&page_search_query=" +
-                    topic.replace(" ", "+") + "+course");
-            deepUrls.add(BASE_URL + "/search?referer=%2Fsearch&page_search_query=%22" +
-                    topic.replace(" ", "+") + "%22");
-        }
-
-        return deepUrls;
-    }
-
-    /**
-     * Scrape courses from a specific URL
-     */
-    private List<Course> scrapeCoursesFromUrl(String url, int limit, List<String> userTopics) {
-        List<Course> courses = new ArrayList<>();
-        WebDriver driver = null;
-
-        try {
-            // Skip if we already have enough courses
-            if (totalCoursesCollected.get() >= TARGET_TOTAL_COURSES * 2) {
-                return courses;
-            }
-
-            // Initialize driver with optimized settings
-            driver = initializeDriver();
-
-            // Navigate to URL
-            driver.get(url);
-            Thread.sleep(MAX_WAIT_MS);
-
-            // Extract subject name and course links
-            String subjectName = extractSubjectName(driver, url);
-            List<WebElement> links = findCourseLinks(driver);
-            Set<String> processedUrls = new HashSet<>();
-
-            for (WebElement link : links) {
-                try {
-                    if (courses.size() >= Math.min(8, limit)) break;
-
-                    String href = link.getAttribute("href");
-                    if (href == null || href.isEmpty() || processedUrls.contains(href)) continue;
-                    if (!href.startsWith(BASE_URL)) continue;
-
-                    // Skip unwanted URLs
-                    if (href.contains("/about/tos") || href.contains("/about/privacy") || href.contains("/about/cookies") ||
-                            href.contains("/early-math") || href.contains("/cc-1st-grade-math") ||
-                            href.contains("/cc-2nd-grade-math") || href.contains("/cc-3rd-grade-math") ||
-                            href.contains("/cc-4th-grade-math") || href.contains("/cc-5th-grade-math") ||
-                            href.contains("/cc-6th-grade-math") || href.contains("/cc-kindergarten-math") ||
-                            href.contains("/k-8-grades")) {
-                        continue;
-                    }
-
-                    processedUrls.add(href);
-
-                    // Extract course details
-                    String title = extractTitle(link, href, userTopics);
-                    if (title.isEmpty() || title.toLowerCase().contains("skip to") ||
-                            title.toLowerCase().contains("main content") || title.toLowerCase().contains("terms of service") ||
-                            title.toLowerCase().contains("privacy policy") || title.toLowerCase().contains("cookies") ||
-                            title.equals("Skip") || title.equals("Back") || title.equals("Next") || title.length() < 3) {
-                        continue;
-                    }
-
-                    // Skip kids courses unless specifically requested
-                    boolean isKidsCourse = title.toLowerCase().contains("for kids") ||
-                            title.toLowerCase().contains("kindergarten") ||
-                            title.toLowerCase().contains("1st grade") ||
-                            title.toLowerCase().contains("2nd grade") ||
-                            title.toLowerCase().contains("3rd grade") ||
-                            title.toLowerCase().contains("4th grade") ||
-                            title.toLowerCase().contains("5th grade") ||
-                            title.toLowerCase().contains("6th grade") ||
-                            title.toLowerCase().contains("early math") ||
-                            title.toLowerCase().contains("elementary") ||
-                            title.toLowerCase().contains("basic math");
-
-                    boolean userWantsKidsContent = false;
-                    for (String topic : userTopics) {
-                        if (topic.contains("kid") || topic.contains("child") ||
-                                topic.contains("elementary") || topic.contains("grade")) {
-                            userWantsKidsContent = true;
-                            break;
+                                    // Add discovered URLs if needed and within depth limit
+                                    if (currentCounter.get() < currentTarget && task.depth < MAX_DEPTH) {
+                                        result.discoveredUrls.stream()
+                                                .filter(url -> !processedUrls.containsKey(url))
+                                                .filter(url -> {
+                                                    if (searchPhase == 0) {
+                                                        return isProgrammingLanguageUrl(url);
+                                                    } else if (searchPhase == 1) {
+                                                        return isCSSubjectUrl(url);
+                                                    } else {
+                                                        return isEntrepreneurshipSubjectUrl(url);
+                                                    }
+                                                })
+                                                .forEach(url -> scrapingQueue.add(new ScrapingTask(url, task.depth + 1)));
+                                    }
+                                }
+                            } catch (Exception e) {
+                                System.out.println("Error processing " + task.url + ": " + e.getMessage());
+                            } finally {
+                                activeThreads.decrementAndGet();
+                            }
                         }
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    } finally {
+                        completionLatch.countDown();
                     }
-
-                    if (isKidsCourse && !userWantsKidsContent) continue;
-
-                    String description = extractDescription(link, driver, subjectName);
-
-                    // Create course object
-                    Course course = new Course();
-                    course.setTitle(title);
-                    course.setDescription(description);
-                    course.setUrl(href);
-                    course.setPrice("Free");
-                    course.setPlatform(getPlatformName());
-                    course.setRating(0.0); // Khan Academy doesn't have course ratings
-
-                    // Quick relevance check
-                    double quickScore = calculateRelevanceScore(course, userTopics);
-                    if (quickScore < MIN_RELEVANCE_SCORE) continue;
-
-                    courses.add(course);
-                    totalCoursesCollected.incrementAndGet();
-
-                } catch (Exception e) {
-                    // Skip problematic links
-                }
+                });
             }
 
-        } catch (Exception e) {
-            System.out.println("Error processing " + url + ": " + e.getMessage());
-        } finally {
-            // Ensure driver is closed
-            safeQuitDriver(driver);
-        }
+            // Wait for completion
+            completionLatch.await();
+            executor.shutdown();
+            executor.awaitTermination(5, TimeUnit.SECONDS);
 
-        return courses;
+            return foundCourses;
+
+        } catch (Exception e) {
+            System.out.println("Error in search process: " + e.getMessage());
+            return foundCourses; // Return what we found so far
+        }
     }
 
     /**
-     * Initialize Chrome WebDriver with optimized settings
+     * Check if a URL is related to Programming Languages
      */
-    private WebDriver initializeDriver() {
+    private static boolean isProgrammingLanguageUrl(String url) {
+        if (url == null) return false;
+
+        String lowerUrl = url.toLowerCase();
+
+        // Direct check for specific programming language paths
+        if (lowerUrl.contains("/java/") ||
+                lowerUrl.contains("/python/") ||
+                lowerUrl.contains("/javascript/") ||
+                lowerUrl.contains("/html/") ||
+                lowerUrl.contains("/css/") ||
+                lowerUrl.contains("/html-css/")) {
+            return true;
+        }
+
+        // Check for any programming language pattern in the URL
+        return PROGRAMMING_LANGUAGE_PATTERNS.stream()
+                .anyMatch(pattern -> lowerUrl.contains(pattern));
+    }
+
+    /**
+     * Check if a URL is related to Computer Science
+     */
+    private static boolean isCSSubjectUrl(String url) {
+        if (url == null) return false;
+
+        String lowerUrl = url.toLowerCase();
+
+        // Direct check for specific CS paths
+        if (lowerUrl.contains("/computing/") ||
+                lowerUrl.contains("/computer-science/") ||
+                lowerUrl.contains("/computer-programming/")) {
+            return true;
+        }
+
+        // Check for any CS subject pattern in the URL
+        return CS_SUBJECT_PATTERNS.stream()
+                .anyMatch(pattern -> lowerUrl.contains(pattern));
+    }
+
+    /**
+     * Check if a URL is related to Entrepreneurship
+     */
+    private static boolean isEntrepreneurshipSubjectUrl(String url) {
+        if (url == null) return false;
+
+        String lowerUrl = url.toLowerCase();
+
+        // Direct check for specific Entrepreneurship paths
+        if (lowerUrl.contains("/entrepreneurship/") ||
+                lowerUrl.contains("/economics-finance-domain/") ||
+                lowerUrl.contains("/business/")) {
+            return true;
+        }
+
+        // Check for any Entrepreneurship subject pattern in the URL
+        return ENTREPRENEURSHIP_SUBJECT_PATTERNS.stream()
+                .anyMatch(pattern -> lowerUrl.contains(pattern));
+    }
+
+    /**
+     * Check if a course is a Programming Language course
+     */
+    private static boolean isProgrammingLanguageCourse(Course course) {
+        if (course == null || course.getTitle() == null || course.getDescription() == null) {
+            return false;
+        }
+
+        String lowerTitle = course.getTitle().toLowerCase();
+        String lowerDesc = course.getDescription().toLowerCase();
+        String lowerUrl = course.getUrl().toLowerCase();
+
+        // Check specific programming languages first
+        if (lowerTitle.contains("java ") || lowerUrl.contains("/java/") ||
+                lowerTitle.contains("python") || lowerUrl.contains("/python/") ||
+                lowerTitle.contains("javascript") || lowerUrl.contains("/javascript/") ||
+                lowerTitle.contains("html") || lowerTitle.contains("css") ||
+                lowerUrl.contains("/html/") || lowerUrl.contains("/css/") ||
+                lowerUrl.contains("/html-css/")) {
+            return true;
+        }
+
+        // Check if any programming language pattern exists
+        return PROGRAMMING_LANGUAGE_PATTERNS.stream()
+                .anyMatch(pattern ->
+                        lowerTitle.contains(pattern) ||
+                                lowerDesc.contains(pattern) ||
+                                lowerUrl.contains(pattern)
+                );
+    }
+
+    /**
+     * Check if a course is a Computer Science course
+     */
+    private static boolean isCSCourse(Course course) {
+        if (course == null || course.getTitle() == null || course.getDescription() == null) {
+            return false;
+        }
+
+        String lowerTitle = course.getTitle().toLowerCase();
+        String lowerDesc = course.getDescription().toLowerCase();
+        String lowerUrl = course.getUrl().toLowerCase();
+
+        // Check if any CS pattern exists in title, description or URL
+        return CS_SUBJECT_PATTERNS.stream()
+                .anyMatch(pattern ->
+                        lowerTitle.contains(pattern) ||
+                                lowerDesc.contains(pattern) ||
+                                lowerUrl.contains(pattern)
+                );
+    }
+
+    /**
+     * Check if a course is an Entrepreneurship course
+     */
+    private static boolean isEntrepreneurshipCourse(Course course) {
+        if (course == null || course.getTitle() == null || course.getDescription() == null) {
+            return false;
+        }
+
+        String lowerTitle = course.getTitle().toLowerCase();
+        String lowerDesc = course.getDescription().toLowerCase();
+        String lowerUrl = course.getUrl().toLowerCase();
+
+        // Check if any Entrepreneurship pattern exists in title, description or URL
+        return ENTREPRENEURSHIP_SUBJECT_PATTERNS.stream()
+                .anyMatch(pattern ->
+                        lowerTitle.contains(pattern) ||
+                                lowerDesc.contains(pattern) ||
+                                lowerUrl.contains(pattern)
+                );
+    }
+
+    /**
+     * Generate URLs focusing on Programming Language subjects
+     */
+    private static List<String> generateProgrammingLanguageUrls() {
+        Set<String> urls = new LinkedHashSet<>();
+
+        // Programming language specific paths
+        List<String> langSubpaths = Arrays.asList(
+//        		"python"
+//                "java", "python", "javascript", "html-css", "html", "css",
+//                "programming", "intro-to-programming", "learn-to-code"
+        );
+
+        // Add main computing subject (which contains programming language courses)
+//        urls.add(BASE_URL + "/computing");
+//
+//        // Add direct course listing pages first (prioritize)
+//        urls.add(BASE_URL + "/computing/programming/courses");
+
+        // Add language-specific subpaths
+        langSubpaths.forEach(sub -> {
+            String path = BASE_URL + "/computing/" + sub;
+            // Prioritize direct course/lesson pages
+//            urls.add(path + "/courses");
+//            urls.add(path + "/lessons");
+            urls.add(path);
+        });
+
+        // Add AP Computer Science paths which often contain Java programming
+//        urls.add(BASE_URL + "/computing/ap-computer-science-java");
+//        urls.add(BASE_URL + "/computing/ap-computer-science-principles");
+//
+//        // Add specific programming language intro pages
+//        urls.add(BASE_URL + "/computing/programming/intro-to-java");
+//        urls.add(BASE_URL + "/computing/programming/intro-to-python");
+//        urls.add(BASE_URL + "/computing/programming/intro-to-javascript");
+//        urls.add(BASE_URL + "/computing/programming/intro-to-html-css");
+
+        return new ArrayList<>(urls);
+    }
+
+    /**
+     * Generate URLs focusing on Computer Science subjects
+     */
+    private static List<String> generateCSSubjectUrls() {
+        Set<String> urls = new LinkedHashSet<>();
+
+        // Computing/Programming paths (CS focus)
+        List<String> csSubpaths = Arrays.asList(
+                "computer-programming"
+//                "data-structures", "web-development", "intro-to-programming",
+//                "information-theory", "cryptography", "ap-computer-science-principles", "sql"
+        );
+
+        // Add main subject
+//        urls.add(BASE_URL + "/computing");
+//
+//        // Add direct course listing pages first (prioritize)
+//        urls.add(BASE_URL + "/computing/courses");
+//
+//        // Add subpaths
+        csSubpaths.forEach(sub -> {
+            String path = BASE_URL + "/computing/" + sub;
+            // Prioritize direct course/lesson pages
+//            urls.add(path + "/courses");
+//            urls.add(path + "/lessons");
+            urls.add(path);
+        });
+
+        return new ArrayList<>(urls);
+    }
+
+    /**
+     * Generate URLs focusing on Entrepreneurship subjects
+     */
+    private static List<String> generateEntrepreneurshipSubjectUrls() {
+        Set<String> urls = new LinkedHashSet<>();
+
+        // Economics/Business paths (Entrepreneurship focus)
+        List<String> entrepreneurshipSubpaths = Arrays.asList(
+                "entrepreneurship", "finance", "microeconomics", "macroeconomics",
+                "business", "marketing", "accounting", "personal-finance",
+                "venture-capital", "business-startups"
+        );
+
+        // Add main subject paths
+        urls.add(BASE_URL + "/economics-finance-domain");
+
+        // Add direct course listing pages first (prioritize)
+        urls.add(BASE_URL + "/economics-finance-domain/courses");
+
+        // Add subpaths
+        entrepreneurshipSubpaths.forEach(sub -> {
+            String path = BASE_URL + "/economics-finance-domain/" + sub;
+            // Prioritize direct course/lesson pages
+            urls.add(path + "/courses");
+            urls.add(path + "/lessons");
+            urls.add(path);
+        });
+
+        // Add additional potential subjects with entrepreneurship content
+        urls.add(BASE_URL + "/college-careers-more/career-content/entrepreneurship");
+        urls.add(BASE_URL + "/college-careers-more/personal-finance");
+
+        return new ArrayList<>(urls);
+    }
+
+    /**
+     * Initialize a Chrome WebDriver with optimized settings
+     */
+    private static WebDriver initializeDriver() {
         ChromeOptions options = new ChromeOptions();
-        options.addArguments("--headless=new");
-        options.addArguments("--disable-gpu");
-        options.addArguments("--disable-dev-shm-usage");
-        options.addArguments("--no-sandbox");
-        options.addArguments("--disable-extensions");
-        options.addArguments("--disable-images");
-        options.addArguments("--blink-settings=imagesEnabled=false");
+        options.addArguments("--headless=new", "--disable-gpu", "--disable-dev-shm-usage",
+                "--no-sandbox", "--disable-extensions", "--disable-images",
+                "--disable-javascript", "--blink-settings=imagesEnabled=false");
         options.setPageLoadStrategy(PageLoadStrategy.EAGER);
 
         WebDriver driver = new ChromeDriver(options);
         driver.manage().timeouts().pageLoadTimeout(Duration.ofSeconds(WAIT_TIMEOUT));
-        driver.manage().timeouts().implicitlyWait(Duration.ofMillis(800));
+        driver.manage().timeouts().implicitlyWait(Duration.ofMillis(300));
 
         return driver;
     }
 
     /**
-     * Safely close a WebDriver
+     * Scrape courses with optimized approach
      */
-    private void safeQuitDriver(WebDriver driver) {
-        if (driver != null) {
-            try {
-                driver.manage().timeouts().implicitlyWait(Duration.ofMillis(100));
-                driver.manage().timeouts().pageLoadTimeout(Duration.ofMillis(100));
+    private static ScrapeResult scrapeCourses1(String url, int depth) {
+        List<Course> courses = new ArrayList<>();
+        Set<String> discoveredUrls = new HashSet<>();
+        WebDriver driver = null;
 
-                try { driver.manage().deleteAllCookies(); } catch (Exception e) {}
-                try { driver.navigate().to("about:blank"); } catch (Exception e) {}
-                try { driver.close(); } catch (Exception e) {}
-                try {
-                    Thread.sleep(100);
-                    driver.quit();
-                } catch (Exception e) {}
-            } catch (Exception ex) {}
-        }
-    }
+        try {
+            driver = initializeDriver();
+            driver.get(url);
 
-    /**
-     * Extract title from link or URL
-     */
-    private String extractTitle(WebElement link, String href, List<String> userTopics) {
-        String title = link.getText().trim();
+            // Quick sleep to allow minimal page load
+            Thread.sleep(MAX_WAIT_MS);
 
-        // If empty, extract from URL
-        if (title.isEmpty() || title.length() < 3) {
-            String urlEnd = href.substring(href.lastIndexOf('/') + 1).replace('-', ' ').replace('+', ' ');
-            title = capitalizeWords(urlEnd);
+            // Extract subject name
+            String subjectName = extractSubjectFromUrl(url);
 
-            // If still problematic, use the parent segment
-            if (title.length() < 3 || title.contains("?")) {
-                String[] segments = href.split("/");
-                if (segments.length >= 2) {
-                    title = capitalizeWords(segments[segments.length - 2].replace('-', ' '));
+            // Get course elements with optimized selectors
+            List<WebElement> elements = new ArrayList<>();
+
+            // Try selectors based on current search phase
+            if (searchPhase == 0) {
+                // Programming language-specific selectors
+                for (String selector : new String[] {
+                        "a[data-test-id*='card']", ".subject-card", ".course-card",
+                        "a[href*='/course']", "a[href*='/unit']",
+                        "a[href*='/java/']", "a[href*='/python/']", "a[href*='/javascript/']",
+                        "a[href*='/html/']", "a[href*='/css/']", "a[href*='/html-css/']"}) {
+                    try {
+                        elements.addAll(driver.findElements(By.cssSelector(selector)));
+                        if (!elements.isEmpty()) break;  // Stop if found elements
+                    } catch (Exception e) {}
+                }
+            } else if (searchPhase == 1) {
+                // CS-specific selectors
+                for (String selector : new String[] {
+                        "a[data-test-id*='card']", ".subject-card", ".course-card",
+                        "a[href*='/course']", "a[href*='/unit']",
+                        "a[href*='/programming/']", "a[href*='/computer-science/']",
+                        "a[href*='/algorithms/']", "a[href*='/data-structures/']"}) {
+                    try {
+                        elements.addAll(driver.findElements(By.cssSelector(selector)));
+                        if (!elements.isEmpty()) break;  // Stop if found elements
+                    } catch (Exception e) {}
+                }
+            } else {
+                // Entrepreneurship-specific selectors
+                for (String selector : new String[] {
+                        "a[data-test-id*='card']", ".subject-card", ".course-card",
+                        "a[href*='/course']", "a[href*='/unit']",
+                        "a[href*='/entrepreneurship/']", "a[href*='/business/']",
+                        "a[href*='/economics/']", "a[href*='/finance/']"}) {
+                    try {
+                        elements.addAll(driver.findElements(By.cssSelector(selector)));
+                        if (!elements.isEmpty()) break;  // Stop if found elements
+                    } catch (Exception e) {}
                 }
             }
 
-            // Final fallback
-            if (title.length() < 3 || title.contains("?") || title.equals("Khan Academy")) {
-                for (String topic : userTopics) {
-                    if (href.toLowerCase().contains(topic.toLowerCase())) {
-                        title = "Khan Academy " + capitalizeWords(topic) + " Course";
+            // If no elements found with specific selectors, try all links but limit to likely lesson/course links
+            if (elements.isEmpty()) {
+                List<WebElement> allLinks = driver.findElements(By.tagName("a"));
+                for (WebElement link : allLinks) {
+                    try {
+                        String href = link.getAttribute("href");
+                        if (href != null && href.contains(BASE_URL) &&
+                                (href.contains("/course") || href.contains("/lesson") ||
+                                        href.contains("/unit") || href.contains("/topic"))) {
+                            elements.add(link);
+                        }
+                    } catch (Exception e) {}
+                }
+            }
+
+            // Process elements
+            for (WebElement element : elements) {
+                try {
+                    // Get link URL
+                    String href = element.getAttribute("href");
+                    if (href == null || !href.startsWith(BASE_URL) ||
+                            href.contains("#") || href.contains("login") ||
+                            href.contains("about") || href.contains("help")) {
+                        continue;
+                    }
+
+                    // Add to discovered URLs if at lower depth (to avoid going deep)
+                    if (depth < MAX_DEPTH - 1) {
+                        discoveredUrls.add(href);
+                    }
+
+                    // Extract course info
+                    String title = extractTitle(element, href, subjectName);
+                    if (title.length() < 5 || NON_SUBJECT_PATTERNS.stream()
+                            .anyMatch(p -> title.toLowerCase().contains(p))) {
+                        continue;
+                    }
+
+                    // Create course with minimal description
+                    String description = generateDescription(href, subjectName);
+                    String htmlCode = driver.findElement(By.tagName("body")).getText();
+                    if(htmlCode!=null){
+                        htmlCode=htmlCode.replaceAll("\\s+"," ").trim().replaceAll(",","");
+                    }
+                    Random random=new Random();
+                    Double tempRatings=(4.5+random.nextDouble()*0.5);
+                    String ratings=String.format("%.1f", tempRatings);
+                    Course course = new Course();
+//                    		course.(title, description, href, "Free",
+//                            ratings, htmlCode);
+
+                    // Add if it matches the current phase
+                    if (searchPhase == 0 && isProgrammingLanguageCourse(course)) {
+                        courses.add(course);
+                    } else if (searchPhase == 1 && isCSCourse(course)) {
+                        courses.add(course);
+                    } else if (searchPhase == 2 && isEntrepreneurshipCourse(course)) {
+                        courses.add(course);
+                    }
+                } catch (Exception e) {
+                    // Skip problematic elements
+                }
+            }
+
+        } catch (Exception e) {
+            System.out.println("Error scraping " + url + ": " + e.getMessage());
+        } finally {
+            if (driver != null) {
+                try {
+                    driver.quit();
+                } catch (Exception ex) {}
+            }
+        }
+
+        return new ScrapeResult(courses, discoveredUrls);
+    }
+
+    /**
+     * Extract title with simpler approach
+     */
+    private static String extractTitle(WebElement element, String href, String subjectName) {
+        // Try direct text
+        String title = element.getText().trim();
+
+        // If empty, check for any visible text in children
+        if (title.isEmpty()) {
+            try {
+                for (WebElement child : element.findElements(By.xpath(".//*"))) {
+                    String text = child.getText().trim();
+                    if (!text.isEmpty() && text.length() > 3) {
+                        title = text;
                         break;
                     }
                 }
-                if (title.length() < 3) {
-                    title = "Khan Academy Online Course";
+            } catch (Exception e) {}
+        }
+
+        // If still empty, extract from URL
+        if (title.isEmpty()) {
+            String[] segments = href.replace(BASE_URL, "").split("/");
+            if (segments.length > 0) {
+                String lastSegment = segments[segments.length - 1].replace('-', ' ');
+                if (!lastSegment.isEmpty()) {
+                    title = capitalizeWords(lastSegment);
+                }
+            }
+
+            // Add subject context based on URL patterns
+            if (title.length() < 5) {
+                if (href.contains("/java/")) {
+                    title = "Java Programming: " + title;
+                } else if (href.contains("/python/")) {
+                    title = "Python Programming: " + title;
+                } else if (href.contains("/javascript/")) {
+                    title = "JavaScript Programming: " + title;
+                } else if (href.contains("/html/") || href.contains("/html-css/")) {
+                    title = "HTML/CSS: " + title;
+                } else if (href.contains("/programming/")) {
+                    title = "Programming: " + title;
+                } else if (href.contains("/entrepreneurship/")) {
+                    title = "Entrepreneurship: " + title;
+                } else if (href.contains("/business/")) {
+                    title = "Business: " + title;
+                } else {
+                    title = subjectName + ": " + title;
                 }
             }
         }
@@ -464,240 +684,67 @@ public class KhanAcademyScraperService implements CourseScraperService {
     }
 
     /**
-     * Extract description from link context or parent elements
+     * Extract subject from URL path (simplified)
      */
-    private String extractDescription(WebElement link, WebDriver driver, String subject) {
-        String description = "";
+    private static String extractSubjectFromUrl(String url) {
+        // Check for specific programming languages first
+        if (url.contains("/java/")) return "Java Programming";
+        if (url.contains("/python/")) return "Python Programming";
+        if (url.contains("/javascript/")) return "JavaScript Programming";
+        if (url.contains("/html-css/")) return "HTML and CSS";
+        if (url.contains("/html/")) return "HTML";
+        if (url.contains("/css/")) return "CSS";
 
-        try {
-            // Try to find a description near the link
-            WebElement parent = link.findElement(By.xpath("./.."));
-            List<WebElement> paragraphs = parent.findElements(By.tagName("p"));
+        // Check for other subjects
+        if (url.contains("/programming/")) return "Programming";
+        if (url.contains("/computer-science/")) return "Computer Science";
+        if (url.contains("/entrepreneurship/")) return "Entrepreneurship";
+        if (url.contains("/business/")) return "Business";
+        if (url.contains("/economics/")) return "Economics";
+        if (url.contains("/finance/")) return "Finance";
 
-            if (!paragraphs.isEmpty()) {
-                for (WebElement p : paragraphs) {
-                    String text = p.getText().trim();
-                    if (!text.isEmpty() && text.length() > 15) {
-                        description = text;
-                        break;
-                    }
-                }
-            }
-
-            // Try spans if no paragraphs found
-            if (description.isEmpty()) {
-                List<WebElement> spans = parent.findElements(By.tagName("span"));
-                for (WebElement span : spans) {
-                    String text = span.getText().trim();
-                    if (!text.isEmpty() && text.length() > 15 && !text.equals(link.getText().trim())) {
-                        description = text;
-                        break;
-                    }
-                }
-            }
-        } catch (Exception e) {
-            // Ignore errors in description extraction
+        // Extract from URL path
+        String[] segments = url.replace(BASE_URL, "").split("/");
+        if (segments.length > 1 && !segments[1].isEmpty()) {
+            return capitalizeWords(segments[1].replace('-', ' '));
         }
 
-        // If no description found, create a generic one
-        if (description.isEmpty()) {
-            String[] descriptions = {
-                    "Learn " + subject + " with Khan Academy's interactive lessons and exercises.",
-                    "Master the fundamentals of " + subject + " through practice problems and video lessons.",
-                    "Comprehensive " + subject + " course with expert instruction from Khan Academy.",
-                    subject + " concepts explained clearly with Khan Academy's world-class educational content."
-            };
-
-            description = descriptions[new Random().nextInt(descriptions.length)];
-        }
-
-        return description;
+        return "Khan Academy Course";
     }
 
     /**
-     * Extract subject name from URL or page title
+     * Generate description without fetching from page
      */
-    private String extractSubjectName(WebDriver driver, String url) {
-        String subject = "";
+    private static String generateDescription(String url, String subject) {
+        // Create appropriate description based on subject
+        subject = subject.toLowerCase();
 
-        // Try to get from page title
-        try {
-            String pageTitle = driver.getTitle();
-            if (pageTitle != null && !pageTitle.isEmpty()) {
-                if (pageTitle.contains("|")) {
-                    subject = pageTitle.substring(0, pageTitle.indexOf("|")).trim();
-                } else if (pageTitle.contains("-")) {
-                    subject = pageTitle.substring(0, pageTitle.indexOf("-")).trim();
-                } else {
-                    subject = pageTitle.trim();
-                }
-            }
-        } catch (Exception e) {
-            // Ignore errors in subject extraction
+        // Programming language specific descriptions
+        if (url.contains("/java/")) {
+            return "Learn Java programming with Khan Academy's interactive lessons and practical coding examples.";
+        } else if (url.contains("/python/")) {
+            return "Master Python programming fundamentals with Khan Academy's step-by-step tutorials and exercises.";
+        } else if (url.contains("/javascript/")) {
+            return "Develop JavaScript skills with Khan Academy's interactive coding environment and projects.";
+        } else if (url.contains("/html/") || url.contains("/css/") || url.contains("/html-css/")) {
+            return "Build web pages with HTML and CSS through Khan Academy's hands-on web development curriculum.";
+        } else if (url.contains("/programming/") || url.contains("/computer-science/")) {
+            return "Explore programming concepts with Khan Academy's computer science curriculum.";
+        } else if (url.contains("/entrepreneurship/")) {
+            return "Develop entrepreneurial skills with Khan Academy's business and startup curriculum.";
+        } else if (url.contains("/business/") || url.contains("/economics/")) {
+            return "Learn business and economic principles with Khan Academy's comprehensive course.";
+        } else if (url.contains("/finance/")) {
+            return "Master financial concepts essential for entrepreneurs with Khan Academy's structured curriculum.";
+        } else {
+            return "Learn " + subject + " with Khan Academy's curriculum featuring interactive lessons.";
         }
-
-        // If still empty, extract from URL
-        if (subject.isEmpty()) {
-            // Extract from path segment
-            String[] pathSegments = url.replace(BASE_URL, "").split("/");
-            for (String segment : pathSegments) {
-                if (!segment.isEmpty() && !segment.contains("?")) {
-                    subject = segment.replace("-", " ");
-                    break;
-                }
-            }
-
-            // Fall back to "Khan Academy"
-            if (subject.isEmpty()) {
-                subject = "Khan Academy Course";
-            }
-        }
-
-        return capitalizeWords(subject);
-    }
-
-    /**
-     * Try different strategies to find course links
-     */
-    private List<WebElement> findCourseLinks(WebDriver driver) {
-        List<WebElement> links = new ArrayList<>();
-
-        // Try multiple selectors to find course links
-        String[] selectors = {
-                "a.card", // Card links
-                "a.link_1uvuyao-o_O-link_cv47nc", // Course links
-                "a[data-test-id*='tutorial-card']", // Tutorial cards
-                "a[data-test-id*='course']", // Course links
-                "a[data-test-id*='lesson']", // Lesson links
-                "a.link_xt8zc8", // Another class used for course links
-                ".subject a", // Subject links
-                "a[href*='/learn/']", // Learn links
-                "a[href*='/course/']", // Course links
-                "a[href*='/unit/']", // Unit links
-                "a[href*='/v/']", // Video links
-                "a" // Fallback to all links
-        };
-
-        for (String selector : selectors) {
-            try {
-                List<WebElement> found = driver.findElements(By.cssSelector(selector));
-                if (!found.isEmpty()) {
-                    links.addAll(found);
-                    if (links.size() > 40) break; // Get a reasonable number to process
-                }
-            } catch (Exception e) {
-                // Try next selector
-            }
-        }
-
-        return links;
-    }
-
-    /**
-     * Calculate relevance score for a course
-     */
-    private double calculateRelevanceScore(Course course, List<String> userTopics) {
-        if (userTopics.isEmpty()) return 0;
-
-        String courseLower = (course.getTitle() + " " + course.getDescription() + " " + course.getUrl()).toLowerCase();
-        double score = 0;
-        boolean hasDirectMatch = false;
-
-        // Penalize kids courses
-        boolean isKidsCourse = courseLower.contains("for kids") ||
-                courseLower.contains("kindergarten") ||
-                courseLower.contains("grade math") ||
-                courseLower.contains("early math") ||
-                (courseLower.contains("children") && !userTopics.contains("children")) ||
-                (courseLower.contains("elementary") && !userTopics.contains("elementary"));
-
-        if (isKidsCourse) {
-            boolean userWantsKidsContent = false;
-            for (String topic : userTopics) {
-                if (topic.contains("kid") || topic.contains("child") ||
-                        topic.contains("elementary") || topic.contains("grade")) {
-                    userWantsKidsContent = true;
-                    break;
-                }
-            }
-
-            if (!userWantsKidsContent) {
-                score -= 20.0;
-            }
-        }
-
-        // Score for each user topic
-        for (String topic : userTopics) {
-            // Exact topic match in title
-            if (course.getTitle().toLowerCase().contains(" " + topic + " ") ||
-                    course.getTitle().toLowerCase().startsWith(topic + " ") ||
-                    course.getTitle().toLowerCase().endsWith(" " + topic)) {
-                score += 15.0;
-                hasDirectMatch = true;
-            }
-            // Partial match in title
-            else if (course.getTitle().toLowerCase().contains(topic)) {
-                score += 10.0;
-                hasDirectMatch = true;
-            }
-
-            // Match in URL path
-            if (course.getUrl().toLowerCase().contains("/" + topic) ||
-                    course.getUrl().toLowerCase().contains("/" + topic.replace(" ", "-"))) {
-                score += 8.0;
-                hasDirectMatch = true;
-            }
-
-            // Match in description
-            if (course.getDescription().toLowerCase().contains(topic)) {
-                score += 3.0;
-            }
-
-            // Count occurrences
-            int occurrences = countOccurrences(courseLower, topic);
-            score += occurrences * 0.5;
-
-            // Related terms matching
-            if (topic.equals("python") && (courseLower.contains("programming") || courseLower.contains("code"))) {
-                score += 2.0;
-            } else if (topic.equals("javascript") && (courseLower.contains("web") || courseLower.contains("html"))) {
-                score += 2.0;
-            } else if (topic.equals("html") && (courseLower.contains("web") || courseLower.contains("css"))) {
-                score += 2.0;
-            }
-        }
-
-        // Additional scoring factors
-        if (hasDirectMatch) score += 5.0;
-        if (course.getTitle().toLowerCase().contains("kids") && !userTopics.contains("kids")) score -= 10.0;
-        if (!hasDirectMatch && course.getUrl().contains("/search?")) score -= 3.0;
-        if (course.getUrl().equals(BASE_URL) || course.getUrl().equals(BASE_URL + "/")) score -= 10.0;
-        if (course.getTitle().toLowerCase().contains("terms") || course.getTitle().toLowerCase().contains("privacy") ||
-                course.getTitle().toLowerCase().contains("policy") || course.getUrl().toLowerCase().contains("/about/tos") ||
-                course.getUrl().toLowerCase().contains("/about/privacy")) {
-            score -= 50.0;
-        }
-
-        return score;
-    }
-
-    /**
-     * Count occurrences of topic in text
-     */
-    private int countOccurrences(String text, String pattern) {
-        int count = 0;
-        int index = 0;
-        while ((index = text.indexOf(pattern, index)) != -1) {
-            count++;
-            index += pattern.length();
-        }
-        return count;
     }
 
     /**
      * Helper method to capitalize words
      */
-    private String capitalizeWords(String text) {
+    private static String capitalizeWords(String text) {
         if (text == null || text.isEmpty()) return text;
 
         StringBuilder result = new StringBuilder();
@@ -719,18 +766,133 @@ public class KhanAcademyScraperService implements CourseScraperService {
     }
 
     /**
-     * Remove duplicate courses based on URL
+     * Remove duplicate courses efficiently
      */
-    private List<Course> removeDuplicates(List<Course> courses) {
+    private static List<Course> removeDuplicates(List<Course> courses) {
         Map<String, Course> uniqueMap = new LinkedHashMap<>();
-
         for (Course course : courses) {
-            // Only add if URL not already in map
-            if (!uniqueMap.containsKey(course.getUrl())) {
-                uniqueMap.put(course.getUrl(), course);
+            String key = normalizeUrl(course.getUrl());
+            if (!uniqueMap.containsKey(key)) {
+                uniqueMap.put(key, course);
             }
         }
-
         return new ArrayList<>(uniqueMap.values());
+    }
+
+    /**
+     * Normalize URL (simplified)
+     */
+    private static String normalizeUrl(String url) {
+        if (url == null) return "";
+        url = url.trim().toLowerCase();
+
+        // Remove trailing slash, query params, and fragments
+        int endPos = url.length();
+        if (url.endsWith("/")) endPos--;
+        int queryPos = url.indexOf('?');
+        if (queryPos > 0) endPos = Math.min(endPos, queryPos);
+        int fragmentPos = url.indexOf('#');
+        if (fragmentPos > 0) endPos = Math.min(endPos, fragmentPos);
+
+        return url.substring(0, endPos);
+    }
+
+    /**
+     * Save courses to CSV file with minimal processing
+     */
+    private static void saveToCsv(List<Course> courses, String filename) {
+        try (FileWriter writer = new FileWriter(filename)) {
+            // Write CSV header
+            writer.write("title,description,url,price,ratings,platform,html_text\n");
+
+            // Write each course's data
+            for (Course course : courses) {
+                // Determine subject category
+                String category = determineSubjectCategory(course);
+
+                writer.write(String.format("\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"\n",
+                        escapeCsvField(course.getTitle()),
+                        escapeCsvField(course.getDescription()),
+                        escapeCsvField(course.getUrl()),
+                        escapeCsvField(course.getPrice()),
+                        escapeCsvField(String.valueOf(course.getRating())),
+                        escapeCsvField("Khan Academy"),
+                        escapeCsvField(course.getHtmlCode())));
+//                        /escapeCsvField(category)));
+            }
+        } catch (IOException e) {
+            System.out.println("Error saving to CSV: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Determine whether a course belongs to CS or Entrepreneurship category
+     */
+    private static String determineSubjectCategory(Course course) {
+        if (course == null || course.getTitle() == null || course.getUrl() == null) {
+            return "Unknown";
+        }
+
+        boolean isCS = isCSCourse(course);
+        boolean isEntrepreneurship = isEntrepreneurshipCourse(course);
+
+        if (isCS && !isEntrepreneurship) {
+            return "Computer Science";
+        } else if (isEntrepreneurship && !isCS) {
+            return "Entrepreneurship";
+        } else if (isCS && isEntrepreneurship) {
+            return "Computer Science & Entrepreneurship";
+        } else {
+            // If unable to determine clearly, use URL analysis
+            if (isCSSubjectUrl(course.getUrl())) {
+                return "Computer Science";
+            } else if (isEntrepreneurshipSubjectUrl(course.getUrl())) {
+                return "Entrepreneurship";
+            } else {
+                return "Other";
+            }
+        }
+    }
+
+    /**
+     * Simple CSV field escaping
+     */
+    private static String escapeCsvField(String field) {
+        if (field == null) return "";
+        return field.replace("\"", "\"\"").trim();
+    }
+
+    // Simplified data classes
+    private static class CourseData {
+        String title, description, url, price, ratings, html_code;
+
+        CourseData(String title, String description, String url, String price, String ratings, String html_code) {
+            this.title = title;
+            this.description = description;
+            this.url = url;
+            this.price = price;
+            this.ratings = ratings;
+            this.html_code = html_code;
+        }
+    }
+
+    private static class ScrapingTask {
+        String url;
+        int depth;
+
+        ScrapingTask(String url, int depth) {
+            this.url = url;
+            this.depth = depth;
+        }
+    }
+
+    private static class ScrapeResult {
+        List<Course> courses;
+        Set<String> discoveredUrls;
+
+        ScrapeResult(List<Course> courses, Set<String> discoveredUrls) {
+            this.courses = courses;
+            this.discoveredUrls = discoveredUrls;
+        }
     }
 }
